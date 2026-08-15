@@ -13,6 +13,7 @@ export interface VoiceConnection {
     disconnect(): void;
     speak?(text: string): Promise<void>;
     waitForSpeechIdle?(): Promise<void>;
+    cancelSpeech?(): void;
     setInputPhase?(phase: TurnPhase): void;
 }
 export type VoiceConnectionFactory = (prefs: VoicePrefs, callbacks: RealtimeCallbacks) => VoiceConnection;
@@ -44,6 +45,7 @@ export declare class VoiceController {
     private observedSpeech?;
     private nativeSubmitPending;
     private nativeSubmitTimer?;
+    private nativeSubmittedTask;
     constructor(sessionId: string, bridge: HarnessBridge, createConnection?: VoiceConnectionFactory);
     subscribe: (listener: () => void) => (() => void);
     getSnapshot: () => VoiceSnapshot;
@@ -61,8 +63,10 @@ export declare class VoiceController {
     private disableNativeComposer;
     private beginObservedTurn;
     private pushObservedDelta;
+    private resetObservedSpeech;
     private finishObservedTurn;
     private runHarnessTurn;
+    private cancelObservedSpeech;
     private setState;
     private emit;
     private setTurnPhase;

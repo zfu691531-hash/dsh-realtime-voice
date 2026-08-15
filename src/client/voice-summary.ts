@@ -2,17 +2,18 @@ import { VOICE_SUMMARY_END, VOICE_SUMMARY_START } from '../voice-contract.ts'
 
 export { VOICE_SUMMARY_END, VOICE_SUMMARY_START } from '../voice-contract.ts'
 
-const MAX_SUMMARY_WEIGHT = 320
+const MAX_SUMMARY_WEIGHT = 240
+type StreamMode = 'undecided' | 'lead' | 'legacy'
 
 /**
- * Consumes Harness text deltas and emits only completed sentences inside the
- * voice-summary markers. The closing marker may be split across any number of
- * chunks, so a matching suffix is retained until it becomes unambiguous.
+ * Streams only the first natural paragraph of the final visible answer.
+ * Legacy voice-summary comments are accepted for in-flight/older sessions, but
+ * new answers need no machine marker and therefore render cleanly in Harness.
  */
 export class VoiceSummaryStream {
   private input = ''
   private pendingSpeech = ''
-  private started = false
+  private mode: StreamMode = 'undecided'
   private ended = false
   private emitted = false
   private acceptedWeight = 0
@@ -21,31 +22,41 @@ export class VoiceSummaryStream {
 
   push(delta: string): void {
     if (delta === '' || this.ended) return
-    this.input = normalizeSummaryMarkers(this.input + delta)
-    if (!this.started) {
-      const start = this.input.indexOf(VOICE_SUMMARY_START)
-      if (start < 0) {
-        // Some models insert spaces inside the HTML comment even when asked
-        // for the exact marker. Keep a small bounded tail until the complete
-        // comment arrives, then normalize it to the canonical marker.
-        this.input = this.input.slice(-64)
+    this.input += delta
+    if (this.mode === 'undecided') {
+      const normalized = normalizeSummaryMarkers(this.input)
+      const legacyStart = normalized.indexOf(VOICE_SUMMARY_START)
+      if (legacyStart >= 0) {
+        this.mode = 'legacy'
+        this.input = normalized.slice(legacyStart + VOICE_SUMMARY_START.length)
+      } else if (couldBeLegacyPrefix(this.input)) {
         return
+      } else {
+        this.mode = 'lead'
+        this.input = this.input.trimStart()
+        if (isUnsafeLead(this.input)) {
+          this.input = ''
+          this.ended = true
+          return
+        }
       }
-      this.started = true
-      this.input = this.input.slice(start + VOICE_SUMMARY_START.length)
     }
-    this.drain(false)
+    if (this.mode === 'legacy') this.drainLegacy()
+    else this.drainLead(false)
   }
 
   finish(finalText: string): void {
-    // Never flush an unclosed summary region. A missing/malformed closing
-    // comment must make voice output fail closed instead of leaking detail or
-    // comment fragments into TTS.
     if (!this.ended) {
-      this.input = normalizeSummaryMarkers(this.input)
-      if (this.input.includes(VOICE_SUMMARY_END)) this.drain(false)
+      if (this.mode === 'undecided') {
+        const fallback = extractVoiceSummary(finalText)
+        if (fallback !== '') this.emitSpeech(fallback)
+        this.ended = true
+        return
+      }
+      if (this.mode === 'legacy') this.drainLegacy()
+      else this.drainLead(true)
     }
-    if (this.ended && this.pendingSpeech.trim() !== '') this.emitSpeech(this.pendingSpeech)
+    if (this.pendingSpeech.trim() !== '') this.emitSpeech(this.pendingSpeech)
     this.pendingSpeech = ''
     if (!this.emitted) {
       const fallback = extractVoiceSummary(finalText)
@@ -53,11 +64,10 @@ export class VoiceSummaryStream {
     }
   }
 
-  private drain(final: boolean): void {
-    if (!this.started || this.ended) return
-    const end = this.input.indexOf(VOICE_SUMMARY_END)
-    if (end >= 0) {
-      this.accept(this.input.slice(0, end), true)
+  private drainLead(final: boolean): void {
+    const separator = paragraphBoundary(this.input)
+    if (separator !== undefined) {
+      this.accept(this.input.slice(0, separator.index), true)
       this.input = ''
       this.ended = true
       return
@@ -65,6 +75,23 @@ export class VoiceSummaryStream {
     if (final) {
       this.accept(this.input, true)
       this.input = ''
+      this.ended = true
+      return
+    }
+    const held = partialParagraphSuffixLength(this.input)
+    const safeLength = this.input.length - held
+    if (safeLength <= 0) return
+    this.accept(this.input.slice(0, safeLength), false)
+    this.input = this.input.slice(safeLength)
+  }
+
+  private drainLegacy(): void {
+    this.input = normalizeSummaryMarkers(this.input)
+    const end = this.input.indexOf(VOICE_SUMMARY_END)
+    if (end >= 0) {
+      this.accept(this.input.slice(0, end), true)
+      this.input = ''
+      this.ended = true
       return
     }
     const held = Math.max(
@@ -78,9 +105,14 @@ export class VoiceSummaryStream {
   }
 
   private accept(text: string, flush: boolean): void {
-    if (text === '') return
     const remaining = MAX_SUMMARY_WEIGHT - this.acceptedWeight
-    if (remaining <= 0) return
+    if (remaining <= 0) {
+      if (flush && this.pendingSpeech.trim() !== '') {
+        this.emitSpeech(this.pendingSpeech)
+        this.pendingSpeech = ''
+      }
+      return
+    }
     const bounded = takeWeighted(text, remaining)
     this.acceptedWeight += speechWeight(bounded)
     this.pendingSpeech += bounded
@@ -107,21 +139,48 @@ export class VoiceSummaryStream {
 }
 
 export function extractVoiceSummary(text: string): string {
-  text = normalizeSummaryMarkers(text)
-  const start = text.indexOf(VOICE_SUMMARY_START)
+  const normalized = normalizeSummaryMarkers(text)
+  const start = normalized.indexOf(VOICE_SUMMARY_START)
   if (start >= 0) {
     const bodyStart = start + VOICE_SUMMARY_START.length
-    const end = text.indexOf(VOICE_SUMMARY_END, bodyStart)
+    const end = normalized.indexOf(VOICE_SUMMARY_END, bodyStart)
     if (end < 0) return ''
-    return cleanSpeechText(takeWeighted(text.slice(bodyStart, end), MAX_SUMMARY_WEIGHT))
+    return cleanSpeechText(takeWeighted(normalized.slice(bodyStart, end), MAX_SUMMARY_WEIGHT))
   }
-  return ''
+  const body = text.trimStart()
+  if (body === '' || isUnsafeLead(body)) return ''
+  const separator = paragraphBoundary(body)
+  const lead = separator === undefined ? body : body.slice(0, separator.index)
+  if (/<!--|-->/u.test(lead)) return ''
+  return cleanSpeechText(takeWeighted(lead, MAX_SUMMARY_WEIGHT))
 }
 
 function normalizeSummaryMarkers(text: string): string {
   return text
     .replace(/<!--\s*voice-summary\s*-->/gi, VOICE_SUMMARY_START)
     .replace(/<!--\s*\/voice-summary\s*-->/gi, VOICE_SUMMARY_END)
+}
+
+function couldBeLegacyPrefix(text: string): boolean {
+  const trimmed = text.trimStart()
+  if (trimmed === '') return true
+  return '<!-- voice-summary -->'.startsWith(trimmed.toLowerCase())
+    || '<!--voice-summary-->'.startsWith(trimmed.toLowerCase())
+}
+
+function isUnsafeLead(text: string): boolean {
+  return /^(?:`|<!--|<|\{|\[|#|\*|>|-|\+\s|\d+[.、)]|\||[•·])/u.test(text.trimStart())
+}
+
+function paragraphBoundary(text: string): { index: number; length: number } | undefined {
+  const match = /\r?\n[\t ]*\r?\n/u.exec(text)
+  if (match === null || match.index === undefined) return undefined
+  return { index: match.index, length: match[0].length }
+}
+
+function partialParagraphSuffixLength(text: string): number {
+  const match = /\r?\n[\t ]*$/u.exec(text)
+  return match === null ? 0 : match[0].length
 }
 
 function completedSentenceBoundary(text: string): number {
@@ -146,9 +205,7 @@ function cleanSpeechText(text: string): string {
 function partialHtmlCommentSuffixLength(text: string): number {
   const open = text.lastIndexOf('<!--')
   if (open >= 0 && text.indexOf('-->', open + 4) < 0) return text.length - open
-  for (const prefix of ['<!-', '<!', '<']) {
-    if (text.endsWith(prefix)) return prefix.length
-  }
+  for (const prefix of ['<!-', '<!', '<']) if (text.endsWith(prefix)) return prefix.length
   return 0
 }
 

@@ -97,7 +97,8 @@ test('voice output contract is session-scoped runtime context, not route-visible
     on.value as never,
   )
   assert.equal(on.result.status, 200)
-  assert.match(fx.voiceContext('voice-session'), /voice-summary/)
+  assert.match(fx.voiceContext('voice-session'), /第一自然段/)
+  assert.doesNotMatch(fx.voiceContext('voice-session'), /内容严格为 voice-summary/)
   assert.equal(fx.voiceContext('other-session'), '')
 
   const off = response()

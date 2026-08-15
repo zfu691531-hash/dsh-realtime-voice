@@ -25,6 +25,7 @@ export class QwenPipelineConnection {
   private bargeInTimer?: ReturnType<typeof setTimeout>
   private ttsStartedAt = 0
   private ttsInterruptedForBargeIn = false
+  private speechEpoch = 0
   private asrEventTail = Promise.resolve()
   private readonly quarantinedItems = new Set<string>()
   private readonly ignoredItems = new Set<string>()
@@ -50,10 +51,12 @@ export class QwenPipelineConnection {
   }
 
   async speak(text: string): Promise<void> {
+    const epoch = this.speechEpoch
     const chunks = splitForTts(text)
     if (chunks.length === 0 || this.disposed) return
     if (this.tts?.readyState !== WebSocket.OPEN) await this.openTts()
     await this.ttsReady
+    if (this.speechEpoch !== epoch) throw new Error('语音已被替换')
     if (this.disposed || this.tts?.readyState !== WebSocket.OPEN) throw new Error('千问 TTS 连接已关闭')
     this.currentSpeechText = joinSpeechText(this.currentSpeechText, text)
     for (const chunk of chunks) {
@@ -70,6 +73,11 @@ export class QwenPipelineConnection {
     await this.player.waitUntilIdle()
     this.speechAudible = false
     this.currentSpeechText = ''
+  }
+
+  cancelSpeech(): void {
+    this.speechEpoch++
+    if (this.isTtsActive() || this.speechResolve !== undefined || this.speechReject !== undefined) this.interruptTts()
   }
 
   setInputPhase(phase: TurnPhase): void {
@@ -537,8 +545,20 @@ function proxyUrl(kind: 'asr' | 'tts', workspaceId: string, region: string, mode
 
 function opened(socket: WebSocket): Promise<void> {
   return new Promise((resolve, reject) => {
-    socket.addEventListener('open', () => resolve(), { once: true })
-    socket.addEventListener('error', () => reject(new Error('本地语音代理连接失败')), { once: true })
+    const timer = setTimeout(() => {
+      cleanup()
+      try { socket.close() } catch { /* already closed */ }
+      reject(new Error('本地语音代理连接超时'))
+    }, 10_000)
+    const onOpen = () => { cleanup(); resolve() }
+    const onError = () => { cleanup(); reject(new Error('本地语音代理连接失败')) }
+    const cleanup = () => {
+      clearTimeout(timer)
+      socket.removeEventListener('open', onOpen)
+      socket.removeEventListener('error', onError)
+    }
+    socket.addEventListener('open', onOpen, { once: true })
+    socket.addEventListener('error', onError, { once: true })
   })
 }
 

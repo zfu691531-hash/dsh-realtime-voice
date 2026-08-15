@@ -166,6 +166,77 @@ test('Qwen composer mode auto-submits an idle utterance, stages busy speech, and
   controller.stop()
 })
 
+test('native slow turn speaks one floor cue then the first answer paragraph', async () => {
+  installBrowserStubs()
+  updatePrefs({ provider: 'qwen', qwenMergeMs: 100, floorDelayMs: 400 })
+  let callbacks!: RealtimeCallbacks
+  let observer!: {
+    onTurnStart(turn: string): void
+    onTextDelta(turn: string, delta: string): void
+    onTurnEnd(turn: string, result: { ok: true; text: string }): void
+  }
+  let draft = ''
+  const spoken: string[] = []
+  const connection: VoiceConnection = {
+    connect: async () => {},
+    disconnect: () => {},
+    speak: async text => { spoken.push(text) },
+  }
+  const bridge = {
+    delegate: async () => ({ ok: true as const, text: 'unused' }),
+    setVoiceMode: async () => {},
+    observeSession: (_sessionId: string, value: typeof observer) => { observer = value; return () => {} },
+  } as unknown as HarnessBridge
+  const controller = new VoiceController('s1', bridge, (_prefs, value) => { callbacks = value; return connection })
+  controller.bindDraft({
+    getDraft: () => draft,
+    setDraft: value => { draft = value },
+    submit: () => { draft = ''; observer.onTurnStart('slow-turn') },
+  })
+  await controller.toggle()
+  await callbacks.onTranscript?.('分析一下这个训练计划')
+  await delay(130)
+  await delay(430)
+  observer.onTextDelta('slow-turn', '这个计划可以继续，但要调整动作顺序。\n\n以下是详细安排。')
+  observer.onTurnEnd('slow-turn', { ok: true, text: '这个计划可以继续，但要调整动作顺序。\n\n以下是详细安排。' })
+  await delay(450)
+  assert.deepEqual(spoken, ['嗯，我认真想一下。', '这个计划可以继续，但要调整动作顺序。'])
+  controller.stop()
+})
+
+test('native fast turn cancels the floor cue', async () => {
+  installBrowserStubs()
+  updatePrefs({ provider: 'qwen', qwenMergeMs: 100, floorDelayMs: 400 })
+  let callbacks!: RealtimeCallbacks
+  let observer!: {
+    onTurnStart(turn: string): void
+    onTextDelta(turn: string, delta: string): void
+    onTurnEnd(turn: string, result: { ok: true; text: string }): void
+  }
+  let draft = ''
+  const spoken: string[] = []
+  const connection: VoiceConnection = { connect: async () => {}, disconnect: () => {}, speak: async text => { spoken.push(text) } }
+  const bridge = {
+    delegate: async () => ({ ok: true as const, text: 'unused' }),
+    setVoiceMode: async () => {},
+    observeSession: (_sessionId: string, value: typeof observer) => { observer = value; return () => {} },
+  } as unknown as HarnessBridge
+  const controller = new VoiceController('s1', bridge, (_prefs, value) => { callbacks = value; return connection })
+  controller.bindDraft({
+    getDraft: () => draft,
+    setDraft: value => { draft = value },
+    submit: () => { draft = ''; observer.onTurnStart('fast-turn') },
+  })
+  await controller.toggle()
+  await callbacks.onTranscript?.('你好')
+  await delay(130)
+  observer.onTextDelta('fast-turn', '你好，很高兴见到你。')
+  observer.onTurnEnd('fast-turn', { ok: true, text: '你好，很高兴见到你。' })
+  await delay(450)
+  assert.deepEqual(spoken, ['你好，很高兴见到你。'])
+  controller.stop()
+})
+
 test('a busy transcript stays in the draft even when Harness completes before endpoint grace', async () => {
   installBrowserStubs()
   updatePrefs({ qwenMergeMs: 100 })

@@ -26,6 +26,7 @@ export declare class QwenPipelineConnection {
     private bargeInTimer?;
     private ttsStartedAt;
     private ttsInterruptedForBargeIn;
+    private speechEpoch;
     private asrEventTail;
     private readonly quarantinedItems;
     private readonly ignoredItems;
@@ -36,6 +37,7 @@ export declare class QwenPipelineConnection {
     connect(): Promise<void>;
     speak(text: string): Promise<void>;
     waitForSpeechIdle(): Promise<void>;
+    cancelSpeech(): void;
     setInputPhase(phase: TurnPhase): void;
     disconnect(): void;
     private openAsr;
