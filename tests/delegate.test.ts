@@ -89,6 +89,48 @@ test('streams text deltas but never reasoning deltas', async () => {
   bridge.dispose()
 })
 
+test('LLM retry invalidates streamed speech text before the replacement result', async () => {
+  const { frames, bridge } = fixture()
+  const events: string[] = []
+  const pending = bridge.delegate('s1', 'voice work', undefined, {
+    onTextDelta: delta => events.push(`delta:${delta}`),
+    onTextReset: () => events.push('reset'),
+  })
+  frames.push({ type: 'session/subscribed', sessionId: 's1', lastSeq: 0 })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'turn/start', data: { turn: 't-retry' } } })
+  frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'user/message', data: { source: { rpcId: 'rpc-voice' } } } })
+  frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'assistant/chunk', data: { turn: 't-retry', step: 1, chunk: { type: 'text-delta', text: '旧结果。' } } } })
+  frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'llm/retry', data: { turn: 't-retry', step: 1 } } })
+  frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'assistant/chunk', data: { turn: 't-retry', step: 1, chunk: { type: 'text-delta', text: '新结果。' } } } })
+  frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'assistant/message', data: { turn: 't-retry', message: { content: [{ type: 'text', text: '新结果。' }] } } } })
+  frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'turn/end', data: { turn: 't-retry', reason: { kind: 'completed' } } } })
+  assert.deepEqual(await pending, { ok: true, text: '新结果。' })
+  assert.deepEqual(events, ['delta:旧结果。', 'reset', 'delta:新结果。'])
+  bridge.dispose()
+})
+
+test('a later tool call invalidates visible preamble but preserves the final text stream', async () => {
+  const { frames, bridge } = fixture()
+  const events: string[] = []
+  const pending = bridge.delegate('s1', '查天气', undefined, {
+    onTextDelta: delta => events.push(`delta:${delta}`),
+    onTextReset: () => events.push('reset'),
+  })
+  frames.push({ type: 'session/subscribed', sessionId: 's1', lastSeq: 0 })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'turn/start', data: { turn: 't-tool' } } })
+  frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'user/message', data: { source: { rpcId: 'rpc-voice' } } } })
+  frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'assistant/chunk', data: { turn: 't-tool', step: 1, chunk: { type: 'text-delta', text: '我先查一下。' } } } })
+  frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'assistant/chunk', data: { turn: 't-tool', step: 1, chunk: { type: 'block-start', blockType: 'tool-call' } } } })
+  frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'assistant/chunk', data: { turn: 't-tool', step: 2, chunk: { type: 'text-delta', text: '明天有雨，记得带伞。' } } } })
+  frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'assistant/message', data: { turn: 't-tool', message: { content: [{ type: 'text', text: '明天有雨，记得带伞。' }] } } } })
+  frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'turn/end', data: { turn: 't-tool', reason: { kind: 'completed' } } } })
+  assert.deepEqual(await pending, { ok: true, text: '明天有雨，记得带伞。' })
+  assert.deepEqual(events, ['delta:我先查一下。', 'reset', 'delta:明天有雨，记得带伞。'])
+  bridge.dispose()
+})
+
 test('observes a native Harness turn without submitting a second prompt', async () => {
   const { frames, calls, bridge } = fixture()
   const events: string[] = []

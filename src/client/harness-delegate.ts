@@ -12,6 +12,7 @@ interface Operation {
   lastAssistantText: string
   cancelRequested: boolean
   onTextDelta?: (delta: string) => void
+  onTextReset?: () => void
   settle: (result: DelegateResult) => void
   timer: ReturnType<typeof setTimeout>
 }
@@ -23,13 +24,16 @@ export type DelegateResult =
 export interface DelegateCallbacks {
   /** Final-answer visible text only. Reasoning and tool chunks are excluded. */
   onTextDelta?(delta: string): void
-  /** Deliver the voice output contract through hidden Harness runtime context. */
+  /** The current streamed text was invalidated by retry or a later tool call. */
+  onTextReset?(): void
+  /** Activate the model-visible voice output contract for this turn. */
   voiceOutputContract?: boolean
 }
 
 export interface SessionTurnCallbacks {
   onTurnStart(turn: string): void
   onTextDelta(turn: string, delta: string): void
+  onTextReset?(turn: string): void
   onTurnEnd(turn: string, result: DelegateResult): void
 }
 
@@ -133,6 +137,7 @@ export class HarnessBridge {
         lastAssistantText: '',
         cancelRequested,
         onTextDelta: callbacks.onTextDelta,
+        onTextReset: callbacks.onTextReset,
         settle: resolve,
         timer,
       }
@@ -260,7 +265,20 @@ export class HarnessBridge {
       const chunk = objectField(event.data, 'chunk')
       if (chunk?.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text !== '') {
         try { operation.onTextDelta?.(chunk.text) } catch { /* speech consumers cannot break the Harness turn */ }
+      } else if (isToolChunk(chunk)) {
+        operation.lastAssistantText = ''
+        try { operation.onTextReset?.() } catch { /* speech consumers cannot break the Harness turn */ }
       }
+    }
+
+    if (event.type === 'tool/call' && turn === operation.turn) {
+      operation.lastAssistantText = ''
+      try { operation.onTextReset?.() } catch { /* speech consumers cannot break the Harness turn */ }
+    }
+
+    if ((event.type === 'llm/retry' || event.type === 'llm/retry-started') && turn === operation.turn) {
+      operation.lastAssistantText = ''
+      try { operation.onTextReset?.() } catch { /* speech consumers cannot break the Harness turn */ }
     }
 
     if (event.type === 'turn/end' && turn === operation.turn) {
@@ -289,11 +307,24 @@ export class HarnessBridge {
       return
     }
     if (turn === undefined || turn !== observer.activeTurn) return
+    if (event.type === 'llm/retry' || event.type === 'llm/retry-started') {
+      observer.lastAssistantText = ''
+      observer.callbacks.onTextReset?.(turn)
+      return
+    }
     if (event.type === 'assistant/chunk') {
       const chunk = objectField(event.data, 'chunk')
       if (chunk?.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text !== '') {
         observer.callbacks.onTextDelta(turn, chunk.text)
+      } else if (isToolChunk(chunk)) {
+        observer.lastAssistantText = ''
+        observer.callbacks.onTextReset?.(turn)
       }
+      return
+    }
+    if (event.type === 'tool/call') {
+      observer.lastAssistantText = ''
+      observer.callbacks.onTextReset?.(turn)
       return
     }
     if (event.type === 'assistant/message') {
@@ -375,6 +406,11 @@ function objectField(value: unknown, key: string): Record<string, unknown> | und
   if (typeof value !== 'object' || value === null) return undefined
   const nested = (value as Record<string, unknown>)[key]
   return typeof nested === 'object' && nested !== null ? nested as Record<string, unknown> : undefined
+}
+
+function isToolChunk(chunk: Record<string, unknown> | undefined): boolean {
+  return chunk?.type === 'tool-call-delta'
+    || (chunk?.type === 'block-start' && chunk.blockType === 'tool-call')
 }
 
 function stringField(value: unknown, key: string): string | undefined {

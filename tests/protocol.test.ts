@@ -15,6 +15,7 @@ const base: VoicePrefs = {
   qwenVadThreshold: 0.85,
   qwenSilenceMs: 700,
   qwenMergeMs: 900,
+  floorDelayMs: 800,
   openaiModel: 'gpt-realtime-2.1',
   openaiVoice: 'marin',
   instructions: 'test',

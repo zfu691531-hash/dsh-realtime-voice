@@ -1,6 +1,6 @@
-# 自适应对话接场器（设计稿）
+# 自适应对话接场器
 
-> 状态：提案，尚未包含在 `dsh-realtime-voice 0.8.0`。
+> 状态：第一阶段已实现；真实工具进度话术仍是后续路线。
 
 ## 问题
 
@@ -24,12 +24,12 @@ Harness 的深度推理和工具调用可能需要数秒到数十秒。完全沉
 ```text
 用户提交 ───────────────→ Harness（唯一推理与工具通道）
     │                         │
-    └→ 650ms 响应窗口          ├→ reasoning/tool/progress 事件
-          │                   └→ voice-summary 文本流
+    └→ 800ms 响应窗口          ├→ reasoning/tool/progress 事件
+          │                   └→ 最终正文第一自然段
           └→ Floor Manager ───────────────→ TTS 播放队列
 ```
 
-两条通道共享同一个 `turnId` 和取消令牌。接场音频属于临时的 `ephemeral-voice` 事件，不作为 assistant 正式消息写入 Harness 历史。
+两条通道共享同一个 `turnId` 和取消令牌。Harness 没有 `ephemeral-voice` 事件；接场只存在于插件本地 TTS 队列，不作为 assistant 正式消息写入 Harness 历史。
 
 ## 状态机
 
@@ -38,8 +38,8 @@ IDLE
   └─ user_commit → WAITING_FOR_RESULT
 
 WAITING_FOR_RESULT
-  ├─ summary_before_650ms → SPEAKING_RESULT
-  ├─ timer_650ms          → SPEAKING_ACK
+  ├─ result_before_threshold → SPEAKING_RESULT
+  ├─ timer_threshold         → SPEAKING_ACK
   └─ user_cancel          → CANCELLED
 
 SPEAKING_ACK
@@ -98,7 +98,7 @@ SPEAKING_RESULT
 ## 调度与缓存
 
 - Harness 请求在用户提交时立即开始，接场生成不得位于关键路径上。
-- `voice-summary` 的首句在后台缓冲；若接场正在播，进入 `resultQueue`，到安全边界立刻接管。
+- 最终正文第一段的首句在后台缓冲；若接场正在播，进入同一个单写者队列，紧随承接句播放。
 - 若结果在接场音频真正开始前到达，取消接场并直接播结果。
 - TTS 使用单一播放器和单写者队列，任何时刻只能有一个音频生产者拥有发言权。
 - 接场器优先使用本地模板和意图槽位；只有无法自然改写时才调用小型低延迟模型，超时 250ms 立即退回模板。
@@ -121,7 +121,7 @@ SPEAKING_RESULT
 
 ## 实现顺序
 
-1. 先实现 `FloorStateMachine`、单写者 TTS 队列、650ms 竞速与旧轮丢弃。
+1. ✅ 已实现 `FloorManager`、单写者 TTS 队列、可配置 800ms 竞速、LLM retry 与旧轮丢弃。
 2. 接入 Harness 已有的 turn/tool 事件，只生成可验证进度。
 3. 加入模板承接和衔接词，不引入第二个模型。
 4. 用真实延迟数据评估后，再决定是否为少量难改写输入增加 250ms 小模型回退。

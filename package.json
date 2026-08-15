@@ -1,6 +1,6 @@
 {
   "name": "dsh-realtime-voice",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Lightweight realtime speech-to-speech for DeepSeek Harness with Qwen and OpenAI providers.",
   "type": "module",
   "main": "lib/index.js",
@@ -22,6 +22,7 @@
     "docs/**/*.md",
     "cordis.patch.yml",
     "README.md",
+    "SECURITY.md",
     "LICENSE"
   ],
   "engines": {

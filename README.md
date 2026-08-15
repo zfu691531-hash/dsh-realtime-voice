@@ -18,7 +18,8 @@ DeepSeek Harness 的轻量实时语音插件。不包含 Docker、Python或本�
 - TTS 使用 24kHz PCM 流式播放。播报期间麦克风音频先留在浏览器本地，不会直接污染云端 ASR；经过播放预热且检测到至少 `500ms` 持续近讲后，才暂停播放器并把带预卷的候选音频交给 ASR。
 - 候选插话经过文本有效性与播报回声相似度复核；误触发会恢复原播报，确认插话才停止 TTS。插话文字只进入原生输入框，等待用户发送或清空，不会自动抢开第二个 Harness 任务。
 - TTS 播放结束后保留 `400ms` 防回声窗口，清理残留 ASR 缓冲后才重新进入监听。
-- 实时语音轮次要求 Harness 先流式输出 1–2 句口语摘要，再继续完整结果；插件在摘要每个完整句子生成时立即提交 TTS，不等待详细正文或 `turn/end`。TTS 只接受一对完整边界标记内的 `text-delta`；分片、带空格或未闭合的 HTML 注释会冻结而不是播报，没有完整摘要边界时静默失败，绝不降级朗读推理、工具过程、标记符号或详细正文。
+- 实时语音轮次要求 Harness 把 1–2 句自然口语结论放在第一段，空行后再写详细结果；插件在第一段每个完整句子生成时立即提交 TTS，不等待详细正文或 `turn/end`。聊天界面不再显示任何 `voice-summary`/HTML 边界，TTS 只消费 `text-delta`，绝不读取 `reasoning-delta`、工具过程或后续详情。
+- 实际等待超过默认 `800ms` 且仍没有正文时，本地接场器最多播放一句不含结论的自然承接；快回答自动取消接场。接场和结果共用同一 TTS 单写者队列，不创建第二个 Agent、不写 Harness 历史；Harness 轨迹出现 LLM retry 时立即作废旧播报。
 - 同一会话只允许一个语音委派。排队任务使用定向删除，运行中任务才会取消当前 turn，避免误伤原有工作。
 - API Key 只由 Host 的凭据服务按请求读取，不写入浏览器、`localStorage`、包文件或日志。
 
@@ -27,7 +28,7 @@ DeepSeek Harness 的轻量实时语音插件。不包含 Docker、Python或本�
 推荐直接从带版本标签的 GitHub 仓库安装：
 
 ```bash
-dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.8.0
+dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.9.0
 ```
 
 仓库提交预构建 `lib/`，因此这条命令不需要本机 TypeScript、源码 checkout 或 pnpm `allowBuilds`。重启 DeepSeek Harness 后，在“设置 → 插件”展开“实时语音（千问 / GPT）”。
@@ -35,7 +36,7 @@ dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.8.0
 也可以下载同版本 GitHub Release 中的预构建 tarball 后执行：
 
 ```bash
-dsh plugin --profile web add ./dsh-realtime-voice-0.8.0.tgz
+dsh plugin --profile web add ./dsh-realtime-voice-0.9.0.tgz
 ```
 
 也可以从源码自行验收并打包：
@@ -48,6 +49,24 @@ npm pack
 ```
 
 源码构建需要本机已安装 DeepSeek Harness；`dev:link-dsh` 只把类型检查和打包所需的 Harness 包链接进当前开发目录。普通用户安装 Release tarball 不需要执行这一步。
+
+### 卸载
+
+```bash
+dsh plugin --profile web remove dsh-realtime-voice
+```
+
+重启 Harness 后插件的 Host 路由、客户端槽位和语音上下文会随 Cordis disposer 一并移除。凭据由 Harness 统一管理，卸载插件不会擅自删除用户凭据。
+
+### Doctor
+
+先运行 `dsh plugin --profile web list` 确认安装版本，再在 Harness 已打开的浏览器页面执行：
+
+```js
+await fetch('/dsh-realtime-voice/status').then(response => response.json())
+```
+
+完整示例配置与排障见 [`docs/EXAMPLE_CONFIG.md`](docs/EXAMPLE_CONFIG.md)。
 
 ## DSH 插件规范
 
@@ -84,7 +103,9 @@ npm run check
 
 详细 rc.5 契约见 [`docs/HARNESS_RC5_CONTRACT.md`](docs/HARNESS_RC5_CONTRACT.md)。
 
-下一阶段的自适应“对话接场器”设计见 [`docs/ADAPTIVE_FLOOR_MANAGER.md`](docs/ADAPTIVE_FLOOR_MANAGER.md)。它是路线图，不属于 0.8.0 的已发布能力。
+面向 DSH 组合架构的职责、事件契约、权限边界、依赖和风险清单见 [`docs/ARCHITECTURE_PACKAGE.md`](docs/ARCHITECTURE_PACKAGE.md)。安全报告流程见 [`SECURITY.md`](SECURITY.md)。
+
+自适应“对话接场器”的实现与后续进度话术路线见 [`docs/ADAPTIVE_FLOOR_MANAGER.md`](docs/ADAPTIVE_FLOOR_MANAGER.md)。当前版本已实现第一阶段的实际延迟竞速、单次承接和轨迹重试失效保护。
 
 ## 安全边界
 

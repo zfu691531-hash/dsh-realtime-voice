@@ -13,6 +13,7 @@ export interface VoicePrefs {
   qwenVadThreshold: number
   qwenSilenceMs: number
   qwenMergeMs: number
+  floorDelayMs: number
   openaiModel: string
   openaiVoice: string
   instructions: string
@@ -32,6 +33,7 @@ const DEFAULTS: VoicePrefs = {
   qwenVadThreshold: 0.85,
   qwenSilenceMs: 700,
   qwenMergeMs: 1200,
+  floorDelayMs: 800,
   openaiModel: 'gpt-realtime-2.1',
   openaiVoice: 'marin',
   instructions: '请用自然、简洁、适合口语播报的中文表达，并允许用户随时打断。',
@@ -84,6 +86,7 @@ function hasCustomPrefs(prefs: VoicePrefs): boolean {
     || prefs.qwenVadThreshold !== DEFAULTS.qwenVadThreshold
     || prefs.qwenSilenceMs !== DEFAULTS.qwenSilenceMs
     || prefs.qwenMergeMs !== DEFAULTS.qwenMergeMs
+    || prefs.floorDelayMs !== DEFAULTS.floorDelayMs
     || prefs.openaiModel !== DEFAULTS.openaiModel
     || prefs.openaiVoice !== DEFAULTS.openaiVoice
     || prefs.instructions !== DEFAULTS.instructions
@@ -130,6 +133,7 @@ function sanitize(value: VoicePrefs): VoicePrefs {
     qwenVadThreshold: numberInRange(value.qwenVadThreshold, -1, 1, DEFAULTS.qwenVadThreshold),
     qwenSilenceMs: numberInRange(value.qwenSilenceMs, 200, 6000, DEFAULTS.qwenSilenceMs),
     qwenMergeMs: numberInRange(value.qwenMergeMs, 100, 5000, DEFAULTS.qwenMergeMs),
+    floorDelayMs: numberInRange(value.floorDelayMs, 400, 3000, DEFAULTS.floorDelayMs),
     openaiModel: text(value.openaiModel, 128) || DEFAULTS.openaiModel,
     openaiVoice: text(value.openaiVoice, 128) || DEFAULTS.openaiVoice,
     instructions: text(value.instructions, 12_000) || DEFAULTS.instructions,
