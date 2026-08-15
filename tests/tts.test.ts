@@ -3,8 +3,9 @@ import test from 'node:test'
 import { isLikelyTtsEcho, LocalBargeInGate, splitForTts } from '../src/client/qwen-pipeline.ts'
 
 test('TTS chunks remove code and remain below the weighted limit', () => {
-  const chunks = splitForTts(`这是最终答案。\n\`\`\`json\n{"private":"tool payload"}\n\`\`\`\n更多说明：${'很长的中文句子。'.repeat(180)}`, 200)
+  const chunks = splitForTts(`<!-- /voice-summary -->这是最终答案。\n\`\`\`json\n{"private":"tool payload"}\n\`\`\`\n更多说明：${'很长的中文句子。'.repeat(180)}`, 200)
   assert.equal(chunks.some(chunk => chunk.includes('tool payload')), false)
+  assert.equal(chunks.some(chunk => /voice|summary|<!--|-->/i.test(chunk)), false)
   assert.equal(chunks.every(chunk => weighted(chunk) <= 200), true)
   assert.match(chunks.join(''), /这是最终答案/)
 })

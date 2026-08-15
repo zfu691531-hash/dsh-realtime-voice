@@ -38,8 +38,14 @@ export class VoiceSummaryStream {
   }
 
   finish(finalText: string): void {
-    if (!this.ended) this.drain(true)
-    if (this.pendingSpeech.trim() !== '') this.emitSpeech(this.pendingSpeech)
+    // Never flush an unclosed summary region. A missing/malformed closing
+    // comment must make voice output fail closed instead of leaking detail or
+    // comment fragments into TTS.
+    if (!this.ended) {
+      this.input = normalizeSummaryMarkers(this.input)
+      if (this.input.includes(VOICE_SUMMARY_END)) this.drain(false)
+    }
+    if (this.ended && this.pendingSpeech.trim() !== '') this.emitSpeech(this.pendingSpeech)
     this.pendingSpeech = ''
     if (!this.emitted) {
       const fallback = extractVoiceSummary(finalText)
@@ -61,7 +67,10 @@ export class VoiceSummaryStream {
       this.input = ''
       return
     }
-    const held = partialMarkerSuffixLength(this.input, VOICE_SUMMARY_END)
+    const held = Math.max(
+      partialMarkerSuffixLength(this.input, VOICE_SUMMARY_END),
+      partialHtmlCommentSuffixLength(this.input),
+    )
     const safeLength = this.input.length - held
     if (safeLength <= 0) return
     this.accept(this.input.slice(0, safeLength), false)
@@ -103,17 +112,10 @@ export function extractVoiceSummary(text: string): string {
   if (start >= 0) {
     const bodyStart = start + VOICE_SUMMARY_START.length
     const end = text.indexOf(VOICE_SUMMARY_END, bodyStart)
-    return cleanSpeechText(takeWeighted(text.slice(bodyStart, end < 0 ? undefined : end), MAX_SUMMARY_WEIGHT))
+    if (end < 0) return ''
+    return cleanSpeechText(takeWeighted(text.slice(bodyStart, end), MAX_SUMMARY_WEIGHT))
   }
-  // Safe compatibility fallback for models that miss the contract: speak only
-  // the first visible paragraph/sentence, never the complete detailed answer.
-  const visible = text
-    .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .trim()
-  const paragraph = visible.split(/\n\s*\n/)[0] ?? ''
-  const boundary = completedSentenceBoundary(paragraph)
-  return cleanSpeechText(takeWeighted(boundary > 0 ? paragraph.slice(0, boundary) : paragraph, 180))
+  return ''
 }
 
 function normalizeSummaryMarkers(text: string): string {
@@ -131,12 +133,23 @@ function completedSentenceBoundary(text: string): number {
 function cleanSpeechText(text: string): string {
   return text
     .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<\/?[^>]+>/g, ' ')
     .replace(/`([^`]+)`/g, '$1')
     .replace(/!??\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/[>*_~]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+function partialHtmlCommentSuffixLength(text: string): number {
+  const open = text.lastIndexOf('<!--')
+  if (open >= 0 && text.indexOf('-->', open + 4) < 0) return text.length - open
+  for (const prefix of ['<!-', '<!', '<']) {
+    if (text.endsWith(prefix)) return prefix.length
+  }
+  return 0
 }
 
 function partialMarkerSuffixLength(text: string, marker: string): number {

@@ -19,6 +19,7 @@ export type VoiceConnectionFactory = (prefs: VoicePrefs, callbacks: RealtimeCall
 export interface VoiceDraftTarget {
     getDraft(): string;
     setDraft(text: string): void;
+    submit?(): void;
 }
 export declare class VoiceController {
     readonly sessionId: string;
@@ -41,6 +42,8 @@ export declare class VoiceController {
     private stopObserving?;
     private voiceContextTimer?;
     private observedSpeech?;
+    private nativeSubmitPending;
+    private nativeSubmitTimer?;
     constructor(sessionId: string, bridge: HarnessBridge, createConnection?: VoiceConnectionFactory);
     subscribe: (listener: () => void) => (() => void);
     getSnapshot: () => VoiceSnapshot;
@@ -53,6 +56,7 @@ export declare class VoiceController {
     private handleTranscript;
     private handleBusyTranscript;
     private stageComposerTranscript;
+    private submitComposerTranscript;
     private enableNativeComposer;
     private disableNativeComposer;
     private beginObservedTurn;
@@ -67,4 +71,5 @@ export declare class VoiceController {
     private flushBufferedTranscriptToDraft;
     private appendToDraft;
     private hasPendingDraft;
+    private clearNativeSubmitPending;
 }

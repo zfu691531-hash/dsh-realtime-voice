@@ -278,6 +278,8 @@ export class HarnessBridge {
     const turn = stringField(event.data, 'turn')
     if (event.type === 'turn/start' && turn !== undefined) observer.openTurn = turn
     if (event.type === 'user/message') {
+      const source = objectField(event.data, 'source')
+      if (source?.kind !== 'user') return
       const activeTurn = turn ?? observer.openTurn
       if (activeTurn !== undefined) {
         observer.activeTurn = activeTurn

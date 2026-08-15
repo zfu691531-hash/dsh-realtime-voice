@@ -100,6 +100,7 @@ test('observes a native Harness turn without submitting a second prompt', async 
   frames.push({ type: 'session/subscribed', sessionId: 's1', lastSeq: 0 })
   frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'turn/start', data: { turn: 'native-1' } } })
   frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'user/message', data: { source: { kind: 'user' } } } })
+  frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'user/message', data: { turn: 'native-1', source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' } } } })
   frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'assistant/chunk', data: { turn: 'native-1', chunk: { type: 'text-delta', text: '摘要。' } } } })
   frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'assistant/message', data: { turn: 'native-1', message: { text: '最终回答' } } } })
   frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'turn/end', data: { turn: 'native-1', reason: { kind: 'completed' } } } })

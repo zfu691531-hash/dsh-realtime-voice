@@ -571,9 +571,11 @@ function isActionableTranscript(text: string): boolean {
 export function splitForTts(text: string, maxWeight = 1000): string[] {
   const spoken = text
     .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<\/?[^>]+>/g, ' ')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
     .replace(/https?:\/\/\S+/g, ' ')
-    .replace(/[`*_#>|]/g, ' ')
+    .replace(/[`*_#>|<]/g, ' ')
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim()

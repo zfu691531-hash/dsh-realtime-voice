@@ -16,7 +16,7 @@ export interface VoiceConnection {
   setInputPhase?(phase: TurnPhase): void
 }
 export type VoiceConnectionFactory = (prefs: VoicePrefs, callbacks: RealtimeCallbacks) => VoiceConnection
-export interface VoiceDraftTarget { getDraft(): string; setDraft(text: string): void }
+export interface VoiceDraftTarget { getDraft(): string; setDraft(text: string): void; submit?(): void }
 
 interface ObservedSpeech {
   harnessTurn: string
@@ -46,6 +46,8 @@ export class VoiceController {
   private stopObserving?: () => void
   private voiceContextTimer?: ReturnType<typeof setInterval>
   private observedSpeech?: ObservedSpeech
+  private nativeSubmitPending = false
+  private nativeSubmitTimer?: ReturnType<typeof setTimeout>
 
   constructor(
     readonly sessionId: string,
@@ -116,6 +118,7 @@ export class VoiceController {
     this.flushBufferedTranscriptToDraft()
     this.taskAbort?.abort()
     this.taskAbort = undefined
+    this.clearNativeSubmitPending()
     this.disableNativeComposer()
     this.observedSpeech = undefined
     const connection = this.connection
@@ -135,6 +138,7 @@ export class VoiceController {
     this.transcriptSegments.push(segment)
     const wasBusy = capturedWhileBusy
       || this.hasPendingDraft()
+      || this.nativeSubmitPending
       || this.taskAbort !== undefined
       || (this.turns.phase !== 'listening' && this.turns.phase !== 'endpoint-candidate')
     this.transcriptWasBusy ||= wasBusy
@@ -145,7 +149,7 @@ export class VoiceController {
       const wasBusy = this.transcriptWasBusy
       const combined = this.takeBufferedTranscript()
       if (combined !== '') void this.turns.enqueue(() => this.composerOnly
-        ? this.stageComposerTranscript(source, combined)
+        ? wasBusy ? this.stageComposerTranscript(source, combined) : this.submitComposerTranscript(source, combined)
         : wasBusy ? this.handleBusyTranscript(source, combined) : this.handleTranscript(source, combined))
     }, loadPrefs().qwenMergeMs)
   }
@@ -240,6 +244,41 @@ export class VoiceController {
     if (this.turns.phase === 'listening') this.setState('listening', '语音已写入输入框；继续说会合并，发送后由 Harness 处理')
   }
 
+  private submitComposerTranscript(source: VoiceConnection, transcript: string): void {
+    if (this.connection !== source) return
+    const target = this.draftTarget
+    if (target?.submit === undefined) {
+      this.stageComposerTranscript(source, transcript)
+      return
+    }
+    this.appendToDraft(transcript)
+    this.nativeSubmitPending = true
+    this.setState('working', '语音已识别，正在交给 Harness')
+    queueMicrotask(() => {
+      if (this.connection !== source || !this.nativeSubmitPending) return
+      try {
+        target.submit?.()
+        // The native composer clears its draft after submit, but React may not
+        // rebind this target until the next render. Drop our shadow copy now so
+        // speech captured during that gap cannot resurrect the submitted turn.
+        this.boundDraft = ''
+      } catch (error) {
+        this.clearNativeSubmitPending()
+        if (this.turns.phase === 'endpoint-candidate') this.setTurnPhase(this.turns.turnId, 'listening')
+        this.setState('error', `自动发送失败，文字已保留在输入框：${error instanceof Error ? error.message : String(error)}`)
+        return
+      }
+      if (!this.nativeSubmitPending) return
+      this.nativeSubmitTimer = setTimeout(() => {
+        this.nativeSubmitTimer = undefined
+        if (!this.nativeSubmitPending || this.connection !== source) return
+        this.nativeSubmitPending = false
+        if (this.turns.phase === 'endpoint-candidate') this.setTurnPhase(this.turns.turnId, 'listening')
+        this.setState('error', 'Harness 未确认自动发送；请检查输入框后手动发送')
+      }, 10_000)
+    })
+  }
+
   private enableNativeComposer(source: VoiceConnection): boolean | Promise<boolean> {
     const bridge = this.bridge as HarnessBridge & Partial<Pick<HarnessBridge, 'observeSession' | 'setVoiceMode'>>
     if (typeof bridge.observeSession !== 'function' || typeof bridge.setVoiceMode !== 'function') return false
@@ -259,12 +298,14 @@ export class VoiceController {
     this.stopObserving = undefined
     if (this.voiceContextTimer !== undefined) clearInterval(this.voiceContextTimer)
     this.voiceContextTimer = undefined
+    this.clearNativeSubmitPending()
     if (this.composerOnly) void this.bridge.setVoiceMode?.(this.sessionId, false).catch(() => {})
     this.composerOnly = false
   }
 
   private beginObservedTurn(source: VoiceConnection, harnessTurn: string): void {
     if (this.connection !== source || !this.composerOnly) return
+    this.clearNativeSubmitPending()
     const turnId = this.turns.begin()
     this.setTurnPhase(turnId, 'harness')
     this.setState('working', '输入已发送，Harness 正在处理')
@@ -316,7 +357,9 @@ export class VoiceController {
       this.setTurnPhase(turnId, 'listening')
       this.setState('listening', isBargeInError(observed.speechError)
         ? '播报已打断；识别文字保留在输入框'
-        : 'Harness 已完成；继续说会写入输入框')
+        : this.hasPendingDraft()
+          ? 'Harness 已完成；输入框里的后续语音可发送或清空'
+          : 'Harness 已完成；继续说将自动处理')
     } catch (error) {
       if (this.connection === source && this.turns.isCurrent(turnId)) {
         this.setTurnPhase(turnId, 'listening')
@@ -429,6 +472,12 @@ export class VoiceController {
     if (this.deferredDraft.trim() !== '') return true
     const target = this.draftTarget
     return (target?.getDraft() ?? this.boundDraft).trim() !== ''
+  }
+
+  private clearNativeSubmitPending(): void {
+    this.nativeSubmitPending = false
+    if (this.nativeSubmitTimer !== undefined) clearTimeout(this.nativeSubmitTimer)
+    this.nativeSubmitTimer = undefined
   }
 }
 
