@@ -1,6 +1,6 @@
 # dsh-realtime-voice
 
-DeepSeek Harness 的轻量实时语音插件。不包含 Docker、Python或本地模型。千问线路是确定性的三段式管线：浏览器采集 PCM，Harness Host 以同源 WebSocket 代理专用 ASR/TTS；识别文本先统一写入 Harness 原生输入框，用户发送后由当前 Harness 会话处理，语音厂商没有独立回答的机会。
+DeepSeek Harness 的轻量实时语音插件。不包含 Docker、Python或本地模型。千问线路是确定性的三段式管线：浏览器采集 PCM，Harness Host 以同源 WebSocket 代理专用 ASR/TTS；空闲时完整语句经原生输入框自动交给当前 Harness 会话，忙时的新语音留在输入框等待用户发送或清空，语音厂商没有独立回答的机会。
 
 ![DeepSeek Harness 实时语音插件设置](https://raw.githubusercontent.com/zfu691531-hash/dsh-realtime-voice/main/screenshots/settings.png)
 
@@ -9,16 +9,16 @@ DeepSeek Harness 的轻量实时语音插件。不包含 Docker、Python或本�
 - 国内线路：`qwen3-asr-flash-realtime → DeepSeek Harness → qwen3-tts-flash-realtime`（阿里云百炼，北京/新加坡）。
 - 全球线路：`gpt-realtime-2.1`（OpenAI Realtime）。
 - 千问使用两个独立语音模型：ASR 只转写，TTS 只播报；不再使用 Omni Realtime 作为对话模型。
-- 所有 ASR final 只追加到原生输入框，不直接调用 `sessions.prompt`，因此同一段话不会一部分进入“调整方向”队列、另一部分留在草稿。用户点击原生发送后，推理、记忆、联网、插件与工具调度全部由 Harness 完成。
+- ASR final 统一经过原生输入框：空闲且输入框为空时，在续说窗口结束后自动调用原生发送；Harness 推理或播报期间、以及输入框已有待处理文字时，只追加草稿等待用户发送或清空。推理、记忆、联网、插件与工具调度全部由 Harness 完成。
 - VAD 默认 `threshold=0.85`、尾静音 `700ms`，并关闭浏览器自动增益以优先近讲。ASR final 先进入候选断句，再等待 `1200ms` 的续说窗口；从停顿开始约 `1.9s` 才提交 Harness，期间继续说话仍属于同一轮。
 - 严格的 `TurnCoordinator` 为每轮分配唯一 ID，并串行处理 ASR 状态事件；旧轮的迟到回调不能再启动 Harness、覆盖新轮或播放过期语音。
 - Harness 执行工具期间，普通背景转写不会再取消当前任务；只有明确说“停止 / 取消 / 算了”才会中止。
-- 无论 Harness 正在推理、TTS 正在播报还是已经恢复监听，新语音都只追加到原生输入框；用户点击原生“发送”后才作为下一轮统一处理。
+- Harness 正在推理或 TTS 正在播报时，新语音只追加到原生输入框；播报结束后不会跳过这些文字。输入框有待处理内容时，后续识别继续合并，直到用户发送或清空；输入框为空才恢复下一轮自动提交。
 - 语音模式开启期间，插件旁路观察用户手动提交的原生 Harness turn，流式提取口语摘要并交给 TTS；不需要插件再次提交相同消息。
 - TTS 使用 24kHz PCM 流式播放。播报期间麦克风音频先留在浏览器本地，不会直接污染云端 ASR；经过播放预热且检测到至少 `500ms` 持续近讲后，才暂停播放器并把带预卷的候选音频交给 ASR。
 - 候选插话经过文本有效性与播报回声相似度复核；误触发会恢复原播报，确认插话才停止 TTS。插话文字只进入原生输入框，等待用户发送或清空，不会自动抢开第二个 Harness 任务。
 - TTS 播放结束后保留 `400ms` 防回声窗口，清理残留 ASR 缓冲后才重新进入监听。
-- 实时语音轮次要求 Harness 先流式输出 1–2 句口语摘要，再继续完整结果；插件在摘要每个完整句子生成时立即提交 TTS，不等待详细正文或 `turn/end`。TTS 只接受 `text-delta` 中受边界标记保护的摘要，绝不播报 `reasoning-delta`、工具过程或详细正文。
+- 实时语音轮次要求 Harness 先流式输出 1–2 句口语摘要，再继续完整结果；插件在摘要每个完整句子生成时立即提交 TTS，不等待详细正文或 `turn/end`。TTS 只接受一对完整边界标记内的 `text-delta`；分片、带空格或未闭合的 HTML 注释会冻结而不是播报，没有完整摘要边界时静默失败，绝不降级朗读推理、工具过程、标记符号或详细正文。
 - 同一会话只允许一个语音委派。排队任务使用定向删除，运行中任务才会取消当前 turn，避免误伤原有工作。
 - API Key 只由 Host 的凭据服务按请求读取，不写入浏览器、`localStorage`、包文件或日志。
 
@@ -27,7 +27,7 @@ DeepSeek Harness 的轻量实时语音插件。不包含 Docker、Python或本�
 推荐直接从带版本标签的 GitHub 仓库安装：
 
 ```bash
-dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.7.1
+dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.8.0
 ```
 
 仓库提交预构建 `lib/`，因此这条命令不需要本机 TypeScript、源码 checkout 或 pnpm `allowBuilds`。重启 DeepSeek Harness 后，在“设置 → 插件”展开“实时语音（千问 / GPT）”。
@@ -35,7 +35,7 @@ dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.7.1
 也可以下载同版本 GitHub Release 中的预构建 tarball 后执行：
 
 ```bash
-dsh plugin --profile web add ./dsh-realtime-voice-0.7.1.tgz
+dsh plugin --profile web add ./dsh-realtime-voice-0.8.0.tgz
 ```
 
 也可以从源码自行验收并打包：
@@ -84,7 +84,7 @@ npm run check
 
 详细 rc.5 契约见 [`docs/HARNESS_RC5_CONTRACT.md`](docs/HARNESS_RC5_CONTRACT.md)。
 
-下一阶段的自适应“对话接场器”设计见 [`docs/ADAPTIVE_FLOOR_MANAGER.md`](docs/ADAPTIVE_FLOOR_MANAGER.md)。它是路线图，不属于 0.7.1 的已发布能力。
+下一阶段的自适应“对话接场器”设计见 [`docs/ADAPTIVE_FLOOR_MANAGER.md`](docs/ADAPTIVE_FLOOR_MANAGER.md)。它是路线图，不属于 0.8.0 的已发布能力。
 
 ## 安全边界
 

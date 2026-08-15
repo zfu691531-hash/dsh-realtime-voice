@@ -105,7 +105,7 @@ test('an existing native draft absorbs later listening transcripts until the use
   assert.equal(delegated, 1)
 })
 
-test('Qwen composer mode never auto-submits ASR and speaks the manually submitted Harness turn', async () => {
+test('Qwen composer mode auto-submits an idle utterance, stages busy speech, and speaks only the summary', async () => {
   installBrowserStubs()
   updatePrefs({ provider: 'qwen', qwenMergeMs: 100 })
   let callbacks!: RealtimeCallbacks
@@ -115,6 +115,8 @@ test('Qwen composer mode never auto-submits ASR and speaks the manually submitte
     onTurnEnd(turn: string, result: { ok: true; text: string }): void
   }
   let draft = ''
+  let submits = 0
+  const submitted: string[] = []
   let delegates = 0
   const spoken: string[] = []
   const connection: VoiceConnection = {
@@ -129,18 +131,35 @@ test('Qwen composer mode never auto-submits ASR and speaks the manually submitte
     observeSession: (_sessionId: string, value: typeof observer) => { observer = value; return () => {} },
   } as unknown as HarnessBridge
   const controller = new VoiceController('s1', bridge, factory)
-  controller.bindDraft({ getDraft: () => draft, setDraft: value => { draft = value } })
+  controller.bindDraft({
+    getDraft: () => draft,
+    setDraft: value => { draft = value },
+    submit: () => {
+      submits++
+      submitted.push(draft)
+      draft = ''
+      observer.onTurnStart('native-turn')
+    },
+  })
   await controller.toggle()
   await callbacks.onTranscript?.('太好了。')
-  await delay(130)
+  await delay(35)
   await callbacks.onTranscript?.('已经调试成功了。')
   await delay(130)
   assert.equal(delegates, 0)
-  assert.equal(draft, '太好了。\n已经调试成功了。')
+  assert.equal(submits, 1)
+  assert.deepEqual(submitted, ['太好了。\n已经调试成功了。'])
+  assert.equal(draft, '')
 
-  draft = '' // native input submitted and cleared by Harness UI
-  observer.onTurnStart('native-turn')
-  observer.onTextDelta('native-turn', '<!-- voice-summary -->已经成功了。<!-- /voice-summary -->')
+  await callbacks.onTranscript?.('推理期间说的下一轮内容。', { capturedWhileBusy: true })
+  await delay(130)
+  assert.equal(submits, 1)
+  assert.equal(draft, '推理期间说的下一轮内容。')
+
+  observer.onTextDelta('native-turn', '<!-- voice-summary -->已经成功了。<!--')
+  observer.onTextDelta('native-turn', ' /')
+  observer.onTextDelta('native-turn', 'voice')
+  observer.onTextDelta('native-turn', '-summary -->详细结果')
   observer.onTurnEnd('native-turn', { ok: true, text: '<!-- voice-summary -->已经成功了。<!-- /voice-summary -->详细结果' })
   await delay(450)
   assert.deepEqual(spoken, ['已经成功了。'])

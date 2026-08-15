@@ -35,7 +35,11 @@ interface NativeInputProps {
 
 export function VoiceStatus({ controller, input, inputActions }: { controller: VoiceController } & NativeInputProps) {
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot)
-  useEffect(() => controller.bindDraft({ getDraft: () => input.draft, setDraft: text => inputActions.setDraft(text) }), [controller, input.draft, inputActions])
+  useEffect(() => controller.bindDraft({
+    getDraft: () => input.draft,
+    setDraft: text => inputActions.setDraft(text),
+    submit: () => inputActions.submit(),
+  }), [controller, input.draft, inputActions])
   if (snapshot.state === 'idle') return null
   const labels: Record<string, string> = { connecting: '正在连接', listening: '正在聆听', speaking: '正在说话', working: 'Harness 正在执行', error: '语音不可用' }
   const continuePrefix = '继续任务：'
@@ -73,7 +77,7 @@ export function SettingsCard() {
         <Field label="声音"><input style={styles.input} value={prefs.openaiVoice} onChange={e => updatePrefs({ openaiVoice: e.currentTarget.value })} /></Field>
       </>}
       <Field label="播报风格"><textarea style={{ ...styles.input, minHeight: 84, resize: 'vertical' }} value={prefs.instructions} onChange={e => updatePrefs({ instructions: e.currentTarget.value })} /></Field>
-      <p style={{ opacity: .66, fontSize: 12, lineHeight: 1.55 }}>密钥不会进入浏览器或插件配置：请由 Harness 凭据系统提供 {prefs.provider === 'qwen' ? 'DASHSCOPE_API_KEY' : 'OPENAI_API_KEY'}。千问识别结果统一写入原生输入框，点击发送后才由 Harness 推理并播报；不会生成语音专属的“调整方向”任务。Tina 属于 Omni，专用 TTS 不支持；默认改用最接近其风格的 Chelsie。桌面壳当前禁用麦克风，点击话筒会在外部浏览器打开同一会话。</p>
+      <p style={{ opacity: .66, fontSize: 12, lineHeight: 1.55 }}>密钥不会进入浏览器或插件配置：请由 Harness 凭据系统提供 {prefs.provider === 'qwen' ? 'DASHSCOPE_API_KEY' : 'OPENAI_API_KEY'}。空闲且输入框为空时，千问识别出的完整语句会自动交给 Harness；Harness 推理或播报期间的新语音才保留在原生输入框，等待发送或清空。Tina 属于 Omni，专用 TTS 不支持；默认改用最接近其风格的 Chelsie。桌面壳当前禁用麦克风，点击话筒会在外部浏览器打开同一会话。</p>
     </div>}
   </li>
 }
