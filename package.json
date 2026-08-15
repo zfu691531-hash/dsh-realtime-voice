@@ -1,6 +1,6 @@
 {
   "name": "dsh-realtime-voice",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Lightweight realtime speech-to-speech for DeepSeek Harness with Qwen and OpenAI providers.",
   "type": "module",
   "main": "lib/index.js",
@@ -85,6 +85,12 @@
       "optional": true
     },
     "@deepseek-ai/dsh-credentials": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-dom": {
       "optional": true
     }
   },

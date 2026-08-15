@@ -27,7 +27,7 @@ DeepSeek Harness 的轻量实时语音插件。不包含 Docker、Python或本�
 推荐直接从带版本标签的 GitHub 仓库安装：
 
 ```bash
-dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.7.0
+dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.7.1
 ```
 
 仓库提交预构建 `lib/`，因此这条命令不需要本机 TypeScript、源码 checkout 或 pnpm `allowBuilds`。重启 DeepSeek Harness 后，在“设置 → 插件”展开“实时语音（千问 / GPT）”。
@@ -35,7 +35,7 @@ dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.7.0
 也可以下载同版本 GitHub Release 中的预构建 tarball 后执行：
 
 ```bash
-dsh plugin --profile web add ./dsh-realtime-voice-0.7.0.tgz
+dsh plugin --profile web add ./dsh-realtime-voice-0.7.1.tgz
 ```
 
 也可以从源码自行验收并打包：
@@ -84,7 +84,7 @@ npm run check
 
 详细 rc.5 契约见 [`docs/HARNESS_RC5_CONTRACT.md`](docs/HARNESS_RC5_CONTRACT.md)。
 
-下一阶段的自适应“对话接场器”设计见 [`docs/ADAPTIVE_FLOOR_MANAGER.md`](docs/ADAPTIVE_FLOOR_MANAGER.md)。它是路线图，不属于 0.7.0 的已发布能力。
+下一阶段的自适应“对话接场器”设计见 [`docs/ADAPTIVE_FLOOR_MANAGER.md`](docs/ADAPTIVE_FLOOR_MANAGER.md)。它是路线图，不属于 0.7.1 的已发布能力。
 
 ## 安全边界
 

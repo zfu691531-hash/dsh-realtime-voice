@@ -18,7 +18,7 @@ https://github.com/zfu691531-hash/dsh-realtime-voice
 仓库按 DSH bundle 规范提交预构建产物，固定标签后一条命令安装，不需要允许 git 依赖执行构建脚本：
 
 ```bash
-dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.7.0
+dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.7.1
 ```
 
 重启 Harness 后，在“设置 → 插件”配置“实时语音（千问 / GPT）”。千问需要在 Harness 凭据中提供 `DASHSCOPE_API_KEY`，并填写同区域的百炼 Workspace ID。
@@ -34,4 +34,4 @@ dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.7.0
 - 当前 Harness Desktop 的 Electron 壳拒绝 renderer 麦克风权限，因此插件会在默认外部浏览器打开同一 loopback Harness 页面；会话和 Agent 仍是同一个 Harness 实例。
 - 项目为 MIT 许可，与 DeepSeek AI、阿里云或 OpenAI 无隶属关系。
 
-下一阶段正在设计自适应“对话接场器”：简单问题直接播结果；深任务超过实际等待阈值后，先播放一句不虚构结果的自然承接，再在 Harness 结果到达时于安全语音边界接上。该功能仍是路线图，不属于 0.7.0 的已发布能力。
+下一阶段正在设计自适应“对话接场器”：简单问题直接播结果；深任务超过实际等待阈值后，先播放一句不虚构结果的自然承接，再在 Harness 结果到达时于安全语音边界接上。该功能仍是路线图，不属于 0.7.1 的已发布能力。
