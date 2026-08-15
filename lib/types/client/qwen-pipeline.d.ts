@@ -1,0 +1,70 @@
+import type { VoicePrefs } from './prefs.ts';
+import type { RealtimeCallbacks } from './realtime.ts';
+import type { TurnPhase } from './turn-coordinator.ts';
+export declare class QwenPipelineConnection {
+    private readonly prefs;
+    private readonly callbacks;
+    private asr?;
+    private tts?;
+    private microphone?;
+    private captureContext?;
+    private captureSource?;
+    private processor?;
+    private silentGain?;
+    private readonly player;
+    private ttsReady?;
+    private resolveTtsReady?;
+    private rejectTtsReady?;
+    private speechResolve?;
+    private speechReject?;
+    private disposed;
+    private speechAudible;
+    private currentSpeechText;
+    private inputPhase;
+    private readonly bargeInGate;
+    private bargeInCandidate;
+    private bargeInTimer?;
+    private ttsStartedAt;
+    private ttsInterruptedForBargeIn;
+    private asrEventTail;
+    private readonly quarantinedItems;
+    private readonly ignoredItems;
+    private readonly utteranceBusy;
+    private asrRestarting;
+    private asrContaminated;
+    constructor(prefs: VoicePrefs, callbacks: RealtimeCallbacks);
+    connect(): Promise<void>;
+    speak(text: string): Promise<void>;
+    waitForSpeechIdle(): Promise<void>;
+    setInputPhase(phase: TurnPhase): void;
+    disconnect(): void;
+    private openAsr;
+    private openTts;
+    private startCapture;
+    private handleAsr;
+    private handleTts;
+    private isTtsActive;
+    private interruptTts;
+    private rejectFalseBargeIn;
+    private resetBargeIn;
+    private appendAsr;
+    private restartAsr;
+    private sendAsr;
+    private sendTts;
+}
+export declare function isLikelyTtsEcho(transcript: string, speech: string): boolean;
+export declare class LocalBargeInGate {
+    private noiseFloor;
+    private activeMs;
+    private candidate;
+    private bufferedMs;
+    private frames;
+    observe(pcm: Int16Array): void;
+    push(pcm: Int16Array, playbackElapsedMs: number): {
+        forward: boolean;
+        preRoll: Int16Array[];
+    };
+    reset(): void;
+}
+/** Keep only speakable prose and stay below Qwen's weighted text limit. */
+export declare function splitForTts(text: string, maxWeight?: number): string[];
