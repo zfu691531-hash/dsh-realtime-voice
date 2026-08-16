@@ -1,6 +1,7 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import type { VoiceController } from './controller.ts'
 import { loadPrefs, subscribePrefs, updatePrefs } from './prefs.ts'
+import { deleteVoiceprint, getVoiceprintStatus, type VoiceprintStatus } from './voiceprint.ts'
 
 const styles = {
   button: { width: 32, height: 32, border: 0, borderRadius: 999, cursor: 'pointer', display: 'grid', placeItems: 'center', color: 'var(--dsw-alias-label-secondary)', background: 'transparent' },
@@ -56,6 +57,12 @@ export function VoiceStatus({ controller, input, inputActions }: { controller: V
 export function SettingsCard() {
   const prefs = useSyncExternalStore(subscribePrefs, loadPrefs, loadPrefs)
   const [open, setOpen] = useState(false)
+  const [voiceprint, setVoiceprint] = useState<VoiceprintStatus>({ configured: false, enrolled: false })
+  const [voiceprintMessage, setVoiceprintMessage] = useState('')
+  useEffect(() => {
+    if (!open || prefs.provider !== 'qwen') return
+    void getVoiceprintStatus().then(setVoiceprint)
+  }, [open, prefs.provider, prefs.voiceprintEnabled])
   return <li style={styles.card}>
     <button type="button" onClick={() => setOpen(!open)} style={{ width: '100%', border: 0, background: 'transparent', color: 'inherit', textAlign: 'left', cursor: 'pointer', padding: 0 }}>
       <strong>实时语音（千问 / GPT）</strong>
@@ -72,13 +79,28 @@ export function SettingsCard() {
         <Field label="人声阈值"><input style={styles.input} type="number" min={-1} max={1} step={0.05} value={prefs.qwenVadThreshold} onChange={e => updatePrefs({ qwenVadThreshold: e.currentTarget.valueAsNumber })} /></Field>
         <Field label="断句等待(ms)"><input style={styles.input} type="number" min={200} max={6000} step={100} value={prefs.qwenSilenceMs} onChange={e => updatePrefs({ qwenSilenceMs: e.currentTarget.valueAsNumber })} /></Field>
         <Field label="语段合并等待(ms)"><input style={styles.input} type="number" min={100} max={5000} step={100} value={prefs.qwenMergeMs} onChange={e => updatePrefs({ qwenMergeMs: e.currentTarget.valueAsNumber })} /></Field>
+        <Field label="本人声纹软门控"><input type="checkbox" checked={prefs.voiceprintEnabled} onChange={e => updatePrefs({ voiceprintEnabled: e.currentTarget.checked })} /></Field>
+        {prefs.voiceprintEnabled && <>
+          <Field label="声纹通过分数"><input style={styles.input} type="number" min={0} max={100} step={1} value={prefs.voiceprintThreshold} onChange={e => updatePrefs({ voiceprintThreshold: e.currentTarget.valueAsNumber })} /></Field>
+          <Field label="声纹状态"><div>
+            <span>{!voiceprint.configured ? '缺少腾讯云凭据' : voiceprint.enrolled ? '已录入' : '待录入：重开语音后，说第一句至少 1 秒的人声'}</span>
+            {voiceprint.enrolled && <button type="button" style={{ ...styles.input, marginLeft: 8, cursor: 'pointer' }} onClick={() => {
+              setVoiceprintMessage('正在删除…')
+              void deleteVoiceprint().then(result => {
+                if (result.ok) { setVoiceprint({ ...voiceprint, enrolled: false }); setVoiceprintMessage('已删除') }
+                else setVoiceprintMessage(result.error)
+              })
+            }}>删除声纹</button>}
+            {voiceprintMessage && <div style={{ opacity: .66, fontSize: 12, marginTop: 4 }}>{voiceprintMessage}</div>}
+          </div></Field>
+        </>}
       </> : <>
         <Field label="模型"><input style={styles.input} value={prefs.openaiModel} onChange={e => updatePrefs({ openaiModel: e.currentTarget.value })} /></Field>
         <Field label="声音"><input style={styles.input} value={prefs.openaiVoice} onChange={e => updatePrefs({ openaiVoice: e.currentTarget.value })} /></Field>
       </>}
       <Field label="自然接场等待(ms)"><input style={styles.input} type="number" min={400} max={3000} step={100} value={prefs.floorDelayMs} onChange={e => updatePrefs({ floorDelayMs: e.currentTarget.valueAsNumber })} /></Field>
       <Field label="播报风格"><textarea style={{ ...styles.input, minHeight: 84, resize: 'vertical' }} value={prefs.instructions} onChange={e => updatePrefs({ instructions: e.currentTarget.value })} /></Field>
-      <p style={{ opacity: .66, fontSize: 12, lineHeight: 1.55 }}>密钥不会进入浏览器或插件配置：请由 Harness 凭据系统提供 {prefs.provider === 'qwen' ? 'DASHSCOPE_API_KEY' : 'OPENAI_API_KEY'}。空闲且输入框为空时，千问识别出的完整语句会自动交给 Harness；Harness 推理或播报期间的新语音才保留在原生输入框，等待发送或清空。Tina 属于 Omni，专用 TTS 不支持；默认改用最接近其风格的 Chelsie。桌面壳当前禁用麦克风，点击话筒会在外部浏览器打开同一会话。</p>
+      <p style={{ opacity: .66, fontSize: 12, lineHeight: 1.55 }}>密钥不会进入浏览器或插件配置：请由 Harness 凭据系统提供 {prefs.provider === 'qwen' ? 'DASHSCOPE_API_KEY' : 'OPENAI_API_KEY'}。空闲且输入框为空时，千问识别出的完整语句会自动交给 Harness；Harness 推理或播报期间的新语音才保留在原生输入框，等待发送或清空。声纹为可选的抗干扰软门控：开启后，首句只用于腾讯云录入，之后未通过或服务异常的语音只写入输入框而不自动发送；它不能替代身份认证或高风险操作授权，需要 Harness 凭据 TENCENT_SECRET_ID / TENCENT_SECRET_KEY。Tina 属于 Omni，专用 TTS 不支持；默认改用最接近其风格的 Chelsie。桌面壳当前禁用麦克风，点击话筒会在外部浏览器打开同一会话。</p>
     </div>}
   </li>
 }

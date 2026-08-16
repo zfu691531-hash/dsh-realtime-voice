@@ -30,6 +30,14 @@ Provide `DASHSCOPE_API_KEY` through the Harness credential system. Do not paste 
 
 Provide `OPENAI_API_KEY` through the Harness credential system. Provider availability and use must comply with the account and regional policy.
 
+## Optional Tencent voiceprint soft gate (Qwen pipeline only)
+
+Provide both `TENCENT_SECRET_ID` and `TENCENT_SECRET_KEY` through the Harness credential system, then enable “本人声纹软门控” in the plugin settings and restart realtime voice. The first utterance with at least one second of effective speech is used only for enrollment; repeat the intended command after the UI reports success.
+
+Subsequent utterances are verified before automatic submission. A rejected utterance, credential error, timeout, or too-short sample remains in the native Harness composer for manual review and sending. The plugin stores only the opaque VoicePrintId on the Host. Use “删除声纹” in settings to remove the upstream enrollment and the local identifier.
+
+This feature reduces accidental activation by other speakers. It does not establish identity, resist replay/deepfake attacks, or authorize sensitive actions.
+
 ## Doctor
 
 ```bash

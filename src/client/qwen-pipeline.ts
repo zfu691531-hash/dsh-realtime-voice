@@ -1,6 +1,7 @@
 import type { VoicePrefs } from './prefs.ts'
 import type { RealtimeCallbacks } from './realtime.ts'
 import type { TurnPhase } from './turn-coordinator.ts'
+import { checkVoiceprint, getVoiceprintStatus, VoiceprintCapture, type VoiceprintGateResult } from './voiceprint.ts'
 
 export class QwenPipelineConnection {
   private asr?: WebSocket
@@ -32,6 +33,12 @@ export class QwenPipelineConnection {
   private readonly utteranceBusy = new Map<string, boolean>()
   private asrRestarting = false
   private asrContaminated = false
+  private readonly voiceprintCapture = new VoiceprintCapture()
+  private voiceprintDispatchTail = Promise.resolve()
+  private voiceprintEpoch = 0
+  private readonly voiceprintHandledItems = new Set<string>()
+  private voiceprintConfigured = false
+  private voiceprintEnrolled = false
 
   constructor(private readonly prefs: VoicePrefs, private readonly callbacks: RealtimeCallbacks) {}
 
@@ -45,6 +52,11 @@ export class QwenPipelineConnection {
       // unamplified; users can lower the VAD threshold for quiet microphones.
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false, channelCount: 1 },
     })
+    if (this.prefs.voiceprintEnabled) {
+      const status = await getVoiceprintStatus()
+      this.voiceprintConfigured = status.configured
+      this.voiceprintEnrolled = status.enrolled
+    }
     await this.openTts()
     await this.openAsr()
     this.startCapture()
@@ -126,6 +138,10 @@ export class QwenPipelineConnection {
     this.quarantinedItems.clear()
     this.ignoredItems.clear()
     this.utteranceBusy.clear()
+    this.voiceprintCapture.clear()
+    this.voiceprintHandledItems.clear()
+    this.voiceprintEpoch++
+    this.voiceprintDispatchTail = Promise.resolve()
   }
 
   private async openAsr(): Promise<void> {
@@ -227,9 +243,14 @@ export class QwenPipelineConnection {
     if (type === 'input_audio_buffer.speech_started') {
       const itemId = typeof event.item_id === 'string' ? event.item_id : ''
       if (itemId !== '') {
+        if (this.prefs.voiceprintEnabled) this.voiceprintCapture.start(itemId)
         this.utteranceBusy.set(itemId, this.inputPhase !== 'listening' && this.inputPhase !== 'endpoint-candidate')
         if (this.bargeInCandidate) this.quarantinedItems.add(itemId)
       }
+    }
+    if (type === 'input_audio_buffer.speech_stopped' && this.prefs.voiceprintEnabled) {
+      const itemId = typeof event.item_id === 'string' ? event.item_id : ''
+      this.voiceprintCapture.stop(itemId)
     }
     if (type === 'conversation.item.input_audio_transcription.text' && this.bargeInCandidate) {
       const confirmed = typeof event.text === 'string' ? event.text : ''
@@ -240,20 +261,48 @@ export class QwenPipelineConnection {
     if (type === 'conversation.item.input_audio_transcription.completed') {
       const transcript = typeof event.transcript === 'string' ? event.transcript.trim() : ''
       const itemId = typeof event.item_id === 'string' ? event.item_id : ''
+      if (this.prefs.voiceprintEnabled && itemId !== '') {
+        if (this.voiceprintHandledItems.has(itemId)) {
+          this.voiceprintCapture.discard(itemId)
+          return
+        }
+        this.voiceprintHandledItems.add(itemId)
+        while (this.voiceprintHandledItems.size > 128) this.voiceprintHandledItems.delete(this.voiceprintHandledItems.values().next().value as string)
+      }
       const capturedWhileBusy = itemId !== ''
         ? (this.utteranceBusy.get(itemId) ?? (this.inputPhase !== 'listening' && this.inputPhase !== 'endpoint-candidate'))
         : (this.inputPhase !== 'listening' && this.inputPhase !== 'endpoint-candidate')
       if (itemId !== '') this.utteranceBusy.delete(itemId)
-      if (itemId !== '' && this.ignoredItems.delete(itemId)) return
+      if (itemId !== '' && this.ignoredItems.delete(itemId)) {
+        this.voiceprintCapture.discard(itemId)
+        return
+      }
       const quarantined = this.bargeInCandidate || (itemId !== '' && this.quarantinedItems.delete(itemId))
       if (quarantined && (!isActionableTranscript(transcript) || isLikelyTtsEcho(transcript, this.currentSpeechText))) {
+        this.voiceprintCapture.discard(itemId)
         this.rejectFalseBargeIn()
         return
       }
-      if (!isActionableTranscript(transcript)) return
+      if (!isActionableTranscript(transcript)) {
+        this.voiceprintCapture.discard(itemId)
+        return
+      }
       if (quarantined) this.interruptTts()
-      if (this.inputPhase === 'post-playback' && !quarantined) return
-      await this.callbacks.onTranscript?.(transcript, { capturedWhileBusy })
+      if (this.inputPhase === 'post-playback' && !quarantined) {
+        this.voiceprintCapture.discard(itemId)
+        return
+      }
+      if (this.prefs.voiceprintEnabled) {
+        this.voiceprintDispatchTail = this.voiceprintDispatchTail.then(
+          () => this.dispatchVoiceprintTranscript(itemId, transcript, capturedWhileBusy),
+          () => this.dispatchVoiceprintTranscript(itemId, transcript, capturedWhileBusy),
+        )
+        return
+      }
+      await this.callbacks.onTranscript?.(transcript, {
+        capturedWhileBusy,
+        voiceprint: this.prefs.voiceprintEnabled ? 'approved' : undefined,
+      })
     }
     if (type === 'error') this.callbacks.onState('error', safeError(event))
   }
@@ -339,13 +388,52 @@ export class QwenPipelineConnection {
   }
 
   private appendAsr(pcm: Int16Array): void {
+    if (this.prefs.voiceprintEnabled) this.voiceprintCapture.push(pcm)
     this.sendAsr({ type: 'input_audio_buffer.append', event_id: eventId(), audio: base64(pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength)) })
+  }
+
+  private beginVoiceprintCheck(itemId: string): Promise<VoiceprintGateResult> {
+    const audio = this.voiceprintCapture.takeBase64(itemId)
+    if (audio === undefined) return Promise.resolve({ status: 'unavailable', error: '有效人声不足一秒' })
+    if (!this.voiceprintConfigured) return Promise.resolve({ status: 'unavailable', error: '腾讯云声纹凭据未配置' })
+    const operation = this.voiceprintEnrolled ? 'verify' : 'enroll'
+    return checkVoiceprint(operation, audio).then(result => {
+      if (result.status === 'enrolled') this.voiceprintEnrolled = true
+      return result
+    })
+  }
+
+  private async dispatchVoiceprintTranscript(itemId: string, transcript: string, capturedWhileBusy: boolean): Promise<void> {
+    const epoch = this.voiceprintEpoch
+    this.voiceprintCapture.stop(itemId)
+    const voiceprint = await this.beginVoiceprintCheck(itemId)
+    if (this.disposed || epoch !== this.voiceprintEpoch) return
+    if (voiceprint.status === 'enrolled') {
+      this.callbacks.onState('listening', '声纹录入成功；请再说一次刚才的指令')
+      return
+    }
+    if (voiceprint.status !== 'approved') {
+      const detail = voiceprint.status === 'rejected'
+        ? `声纹未通过（${Math.round(voiceprint.score)}分）；文字已保留，可手动发送`
+        : '声纹暂不可用；文字已保留，可手动发送'
+      this.callbacks.onState('listening', detail)
+      await this.callbacks.onTranscript?.(transcript, {
+        capturedWhileBusy: true,
+        voiceprint: voiceprint.status,
+      })
+      return
+    }
+    await this.callbacks.onTranscript?.(transcript, { capturedWhileBusy, voiceprint: 'approved' })
   }
 
   private restartAsr(): void {
     if (this.disposed || this.asrRestarting) return
     this.asrRestarting = true
     this.asrContaminated = false
+    this.voiceprintCapture.clear()
+    this.voiceprintHandledItems.clear()
+    this.voiceprintEpoch++
+    this.voiceprintDispatchTail = Promise.resolve()
     const socket = this.asr
     this.asr = undefined
     socket?.close(1000, 'reset contaminated input')

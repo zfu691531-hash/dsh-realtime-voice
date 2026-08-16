@@ -6,15 +6,15 @@ This document is the handoff contract for the wider DSH plugin composition.
 
 - Repository: <https://github.com/zfu691531-hash/dsh-realtime-voice>
 - Default branch: `main`
-- Release line: `0.9.x`
-- Current release: `v0.9.0`
-- Released commit: `e058116fde9610ffee33fa435afc9f60c5644cd2`
+- Release line: `0.10.x`
+- Current release candidate: `v0.10.0`
+- Released commit: recorded by the immutable `v0.10.0` tag after release publication
 
 The exact released commit is recorded by the immutable Git tag and GitHub Release. Do not duplicate this repository or rewrite its history.
 
 ## Responsibility and non-goals
 
-The plugin owns microphone capture, endpointing, ASR transport, native Harness input submission, trace observation, turn/floor coordination, first-paragraph extraction, TTS transport, playback, and guarded barge-in.
+The plugin owns microphone capture, endpointing, ASR transport, optional speaker-interference soft gating, native Harness input submission, trace observation, turn/floor coordination, first-paragraph extraction, TTS transport, playback, and guarded barge-in.
 
 It does not own reasoning, memory, web/app tools, business actions, cross-agent collaboration, gesture recognition, or a second conversational model. Harness remains the only reasoning and tool scheduler and the only writer of official conversation history.
 
@@ -35,17 +35,19 @@ The optional OpenAI route uses the provider Realtime transport, but its mandator
 - Floor timing starts only after the trace confirms a real `user/message` with `source.kind === 'user'`.
 - `assistant/chunk.text-delta` is visible answer text; `reasoning-delta` is ignored.
 - `tool-call-delta`, `block-start(tool-call)`, and `tool/call` invalidate any streamed tool preamble while preserving simple-answer streaming.
+- The floor manager dynamically composes bounded local cues from a sanitized task topic, intent, tool/retry stage, and per-turn deduplication. These cues share the result TTS queue and never become Harness messages.
 - `llm/retry` and `llm/retry-started` invalidate queued/in-flight speech. Qwen `speechEpoch` also closes the TTS-ready race.
 - `turn/end(completed)` finishes playback; aborted/interrupted/blocked/error/max-tokens paths cancel or fail without inventing an answer.
 - Only explicit cancel phrases cancel an active Harness task. General barge-in stages text in the native composer.
 
 ## Data and permission boundary
 
-- Browser: microphone PCM, ephemeral provider audio, transcript drafts, non-secret preferences.
-- Harness Host: credential resolution, same-origin signaling/WebSocket proxy, active voice-context TTL.
-- Provider: audio/text required by the selected ASR or TTS request.
+- Browser: microphone PCM, a bounded in-memory voiceprint utterance buffer when explicitly enabled, ephemeral provider audio, transcript drafts, non-secret preferences.
+- Harness Host: credential resolution, same-origin signaling/WebSocket proxy, active voice-context TTL, and an optional opaque Tencent VoicePrintId. The ID is not returned to the browser.
+- Provider: audio/text required by the selected ASR or TTS request. When voiceprint is enabled, the current 16kHz PCM utterance is also sent to Tencent Cloud for enrollment or verification; raw audio is not persisted by the plugin.
 - Harness session log: user transcript and Harness answer/tool events; local floor cues are never persisted.
 - Required permissions: microphone in an external browser for Desktop rc.5, loopback network access, and the chosen provider credential. No filesystem, app-control, memory, gesture, or MCP permission is requested by this plugin.
+- Voiceprint is a fail-closed auto-submit signal, not authentication: rejected, short, timed-out, or unavailable checks preserve text in the composer for manual sending and never authorize sensitive work.
 
 ## Composition dependencies
 
@@ -87,6 +89,7 @@ dsh plugin --profile web list
 
 - Desktop rc.5 denies renderer microphone permission, so the plugin opens the same loopback session in the default browser.
 - Provider latency, quota, model/voice availability, and ASR accuracy remain external dependencies.
+- Optional voiceprint verification adds one provider request per completed utterance, can add latency, and cannot resist replay, synthesis, or targeted impersonation.
 - A tool preamble that becomes audible before its later tool-call event cannot be unheard; the output contract prevents such preambles and the trace gate cancels any remaining audio immediately.
 - First-paragraph TTS intentionally fails closed for machine-shaped Markdown/JSON/HTML output.
 - OpenAI and Qwen provider contracts can change; upgrades require trace and signaling regression tests.

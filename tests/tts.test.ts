@@ -85,6 +85,8 @@ function prefs(): VoicePrefs {
     qwenSilenceMs: 700,
     qwenMergeMs: 1200,
     floorDelayMs: 800,
+    voiceprintEnabled: false,
+    voiceprintThreshold: 75,
     openaiModel: 'gpt-realtime-2.1',
     openaiVoice: 'marin',
     instructions: '',

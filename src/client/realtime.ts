@@ -4,7 +4,10 @@ import { parseToolCall, sessionUpdate, toolOutput, type ToolCall } from './proto
 export interface RealtimeCallbacks {
   onState(state: 'connecting' | 'listening' | 'speaking' | 'error', detail?: string): void
   onToolCall(call: ToolCall): Promise<unknown>
-  onTranscript?(text: string, meta?: { capturedWhileBusy?: boolean }): Promise<void>
+  onTranscript?(text: string, meta?: {
+    capturedWhileBusy?: boolean
+    voiceprint?: 'approved' | 'rejected' | 'unavailable'
+  }): Promise<void>
 }
 
 export class RealtimeConnection {

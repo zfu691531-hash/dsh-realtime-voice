@@ -11,6 +11,7 @@ import {
   type SignalRequest,
 } from './host/signaling.ts'
 import { QwenSpeechProxy } from './host/qwen-speech-proxy.ts'
+import { TencentVoiceprintClient, validVoiceprintAudio, validVoiceprintId } from './host/tencent-voiceprint.ts'
 import { VOICE_OUTPUT_CONTEXT } from './voice-contract.ts'
 
 export const name = 'dsh-realtime-voice'
@@ -70,11 +71,18 @@ interface HostContext {
 export interface HostDependencies {
   exchangeOpenAi(request: SignalRequest, key: string, signal: AbortSignal): Promise<string>
   exchangeQwen(request: SignalRequest, key: string, signal: AbortSignal): Promise<string>
+  voiceprintEnroll(audio: string, secretId: string, secretKey: string, signal: AbortSignal): Promise<string>
+  voiceprintVerify(audio: string, voiceprintId: string, secretId: string, secretKey: string, signal: AbortSignal): Promise<{ decision: boolean; score: number }>
+  voiceprintDelete(voiceprintId: string, secretId: string, secretKey: string, signal: AbortSignal): Promise<void>
 }
 
+const voiceprintClient = new TencentVoiceprintClient()
 const productionDependencies: HostDependencies = {
   exchangeOpenAi: exchangeOpenAiSdp,
   exchangeQwen: exchangeQwenSdp,
+  voiceprintEnroll: async (audio, secretId, secretKey, signal) => await voiceprintClient.enroll(audio, { secretId, secretKey }, signal),
+  voiceprintVerify: async (audio, voiceprintId, secretId, secretKey, signal) => await voiceprintClient.verify(audio, voiceprintId, { secretId, secretKey }, signal),
+  voiceprintDelete: async (voiceprintId, secretId, secretKey, signal) => await voiceprintClient.delete(voiceprintId, { secretId, secretKey }, signal),
 }
 
 const DEFAULT_INSTRUCTIONS = '请用自然、简洁、适合口语播报的中文表达，并允许用户随时打断。'
@@ -92,6 +100,9 @@ const prefsSchema = z.object({
   qwenSilenceMs: z.number().default(700),
   qwenMergeMs: z.number().default(1200),
   floorDelayMs: z.number().default(800),
+  voiceprintEnabled: z.boolean().default(false),
+  voiceprintThreshold: z.number().default(75),
+  voiceprintId: z.string().default(''),
   openaiModel: z.string().default('gpt-realtime-2.1'),
   openaiVoice: z.string().default('marin'),
   instructions: z.string().default(DEFAULT_INSTRUCTIONS),
@@ -151,7 +162,7 @@ export function apply(ctx: HostContext, dependencies: HostDependencies = product
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
     path: '/dsh-realtime-voice/status',
-    handler: (req, res) => handleStatus(ctx, req, res),
+    handler: (req, res) => handleStatus(ctx, () => prefsScope, req, res),
   }), 'dsh-realtime-voice: status')
   ctx.effect(() => ctx.webServer.register({
     kind: 'exact',
@@ -163,6 +174,11 @@ export function apply(ctx: HostContext, dependencies: HostDependencies = product
     path: '/dsh-realtime-voice/context',
     handler: (req, res) => handleVoiceContext(activeVoiceSessions, voiceContextTtlMs, req, res),
   }), 'dsh-realtime-voice: per-session output context')
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/dsh-realtime-voice/voiceprint',
+    handler: (req, res) => handleVoiceprint(ctx, deps, () => prefsScope, req, res),
+  }), 'dsh-realtime-voice: optional voiceprint gate')
   for (const kind of ['asr', 'tts'] as const) {
     ctx.effect(() => ctx.webServer.registerUpgrade({
       path: `/dsh-realtime-voice/${kind}/qwen`,
@@ -200,6 +216,9 @@ export function isHostDependencies(value: unknown): value is HostDependencies {
   return typeof value === 'object' && value !== null
     && typeof (value as HostDependencies).exchangeOpenAi === 'function'
     && typeof (value as HostDependencies).exchangeQwen === 'function'
+    && typeof (value as HostDependencies).voiceprintEnroll === 'function'
+    && typeof (value as HostDependencies).voiceprintVerify === 'function'
+    && typeof (value as HostDependencies).voiceprintDelete === 'function'
 }
 
 async function handleSignal(
@@ -233,19 +252,90 @@ async function handleSignal(
   }
 }
 
-async function handleStatus(ctx: HostContext, req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleStatus(
+  ctx: HostContext,
+  getScope: () => SettingsScope<unknown> | undefined,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
   if (req.method !== 'GET') return sendJson(res, 405, { error: 'method not allowed' })
   if (!isLoopbackRequest(req)) return sendJson(res, 403, { error: 'loopback same-origin request required' })
-  const [openai, qwen] = await Promise.all([
+  const [openai, qwen, tencentId, tencentKey] = await Promise.all([
     ctx.credentials.describe(credentialRef('OPENAI_API_KEY')),
     ctx.credentials.describe(credentialRef('DASHSCOPE_API_KEY')),
+    ctx.credentials.describe(credentialRef('TENCENT_SECRET_ID')),
+    ctx.credentials.describe(credentialRef('TENCENT_SECRET_KEY')),
   ])
+  const stored = asRecord(getScope()?.get())
   sendJson(res, 200, {
     openai: { configured: openai.configured },
     qwen: { configured: qwen.configured },
+    voiceprint: {
+      configured: tencentId.configured && tencentKey.configured,
+      enrolled: validVoiceprintId(stored.voiceprintId),
+    },
     desktopMicrophone: false,
     externalBrowserRequired: true,
   })
+}
+
+async function handleVoiceprint(
+  ctx: HostContext,
+  dependencies: HostDependencies,
+  getScope: () => SettingsScope<unknown> | undefined,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  try {
+    if (req.method !== 'POST' && req.method !== 'DELETE') throw new HttpError(405, 'method not allowed')
+    if (!isLoopbackRequest(req)) throw new HttpError(403, 'loopback same-origin request required')
+    const scope = getScope()
+    if (scope === undefined) throw new HttpError(503, 'settings storage unavailable')
+    const stored = asRecord(scope.get())
+    const voiceprintId = validVoiceprintId(stored.voiceprintId) ? stored.voiceprintId : undefined
+    const [secretId, secretKey] = await Promise.all([
+      ctx.credentials.resolve(credentialRef('TENCENT_SECRET_ID')),
+      ctx.credentials.resolve(credentialRef('TENCENT_SECRET_KEY')),
+    ])
+    if (secretId?.value.trim() === '' || secretKey?.value.trim() === '' || secretId === undefined || secretKey === undefined) {
+      throw new HttpError(502, 'Tencent voiceprint credentials are not configured')
+    }
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(new Error('voiceprint timeout')), 10_000)
+    try {
+      if (req.method === 'DELETE') {
+        if (voiceprintId !== undefined) await dependencies.voiceprintDelete(voiceprintId, secretId.value, secretKey.value, controller.signal)
+        await scope.update({ voiceprintId: '' })
+        sendJson(res, 200, { ok: true, enrolled: false })
+        return
+      }
+      const body = asRecord(await readJsonBody(req, 1_400_000))
+      if (body.operation !== 'enroll' && body.operation !== 'verify') throw new HttpError(400, 'invalid voiceprint operation')
+      if (!validVoiceprintAudio(body.audio)) throw new HttpError(400, 'voiceprint audio must be 1-30 seconds of base64 PCM16 at 16kHz')
+      if (body.operation === 'enroll') {
+        if (voiceprintId !== undefined) throw new HttpError(409, 'a voiceprint is already enrolled; delete it before enrolling again')
+        const enrolledId = await dependencies.voiceprintEnroll(body.audio, secretId.value, secretKey.value, controller.signal)
+        if (!validVoiceprintId(enrolledId)) throw new Error('voiceprint provider returned an invalid identifier')
+        await scope.update({ voiceprintId: enrolledId })
+        sendJson(res, 200, { ok: true, enrolled: true })
+        return
+      }
+      if (voiceprintId === undefined) throw new HttpError(409, 'no voiceprint is enrolled')
+      const result = await dependencies.voiceprintVerify(body.audio, voiceprintId, secretId.value, secretKey.value, controller.signal)
+      const threshold = numberInRange(stored.voiceprintThreshold, 0, 100, 75)
+      sendJson(res, 200, {
+        ok: true,
+        approved: result.decision && result.score >= threshold,
+        score: Math.max(0, Math.min(100, result.score)),
+      })
+    } finally {
+      clearTimeout(timer)
+    }
+  } catch (error) {
+    const status = error instanceof HttpError ? error.status : 502
+    const message = error instanceof Error ? error.message : 'voiceprint request failed'
+    sendJson(res, status, { error: message })
+  }
 }
 
 async function handlePrefs(
@@ -300,10 +390,16 @@ function sanitizePrefs(value: unknown): Record<string, unknown> {
     qwenSilenceMs: numberInRange(source.qwenSilenceMs, 200, 6000, 700),
     qwenMergeMs: numberInRange(source.qwenMergeMs, 100, 5000, 1200),
     floorDelayMs: numberInRange(source.floorDelayMs, 400, 3000, 800),
+    voiceprintEnabled: source.voiceprintEnabled === true,
+    voiceprintThreshold: numberInRange(source.voiceprintThreshold, 0, 100, 75),
     openaiModel: text(source.openaiModel, 128) || 'gpt-realtime-2.1',
     openaiVoice: text(source.openaiVoice, 128) || 'marin',
     instructions: text(source.instructions, 12_000) || DEFAULT_INSTRUCTIONS,
   }
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
 
 function numberInRange(value: unknown, min: number, max: number, fallback: number): number {

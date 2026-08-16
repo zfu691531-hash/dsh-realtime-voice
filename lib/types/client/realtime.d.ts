@@ -5,6 +5,7 @@ export interface RealtimeCallbacks {
     onToolCall(call: ToolCall): Promise<unknown>;
     onTranscript?(text: string, meta?: {
         capturedWhileBusy?: boolean;
+        voiceprint?: 'approved' | 'rejected' | 'unavailable';
     }): Promise<void>;
 }
 export declare class RealtimeConnection {
