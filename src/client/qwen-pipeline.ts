@@ -241,6 +241,7 @@ export class QwenPipelineConnection {
     const type = event.type
     if (type === 'session.updated') this.callbacks.onState('listening')
     if (type === 'input_audio_buffer.speech_started') {
+      this.callbacks.onSpeechStart?.()
       const itemId = typeof event.item_id === 'string' ? event.item_id : ''
       if (itemId !== '') {
         if (this.prefs.voiceprintEnabled) this.voiceprintCapture.start(itemId)
@@ -248,9 +249,12 @@ export class QwenPipelineConnection {
         if (this.bargeInCandidate) this.quarantinedItems.add(itemId)
       }
     }
-    if (type === 'input_audio_buffer.speech_stopped' && this.prefs.voiceprintEnabled) {
-      const itemId = typeof event.item_id === 'string' ? event.item_id : ''
-      this.voiceprintCapture.stop(itemId)
+    if (type === 'input_audio_buffer.speech_stopped') {
+      this.callbacks.onSpeechEnd?.()
+      if (this.prefs.voiceprintEnabled) {
+        const itemId = typeof event.item_id === 'string' ? event.item_id : ''
+        this.voiceprintCapture.stop(itemId)
+      }
     }
     if (type === 'conversation.item.input_audio_transcription.text' && this.bargeInCandidate) {
       const confirmed = typeof event.text === 'string' ? event.text : ''

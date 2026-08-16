@@ -19,6 +19,8 @@ export interface VoiceConnection {
 export type VoiceConnectionFactory = (prefs: VoicePrefs, callbacks: RealtimeCallbacks) => VoiceConnection;
 export interface VoiceDraftTarget {
     getDraft(): string;
+    getDraftRev?(): number;
+    getPhase?(): 'plain' | 'adjudicating' | 'claimed' | 'submitting';
     setDraft(text: string): void;
     submit?(): void;
 }
@@ -35,9 +37,19 @@ export declare class VoiceController {
     private transcriptSource?;
     private transcriptSegments;
     private transcriptWasBusy;
+    private transcriptCapturedWhileBusy;
+    private transcriptVoiceprint;
     private draftTarget?;
     private boundDraft;
+    private boundDraftRev?;
+    private pluginDraftWritePending;
     private deferredDraft;
+    private draftAutoSendLease?;
+    private draftAutoSendTimer?;
+    private draftCommitTimer?;
+    private draftSpeechResumeTimer?;
+    private draftSpeechActive;
+    private draftAutoSendGeneration;
     private readonly turns;
     private composerOnly;
     private stopObserving?;
@@ -59,6 +71,7 @@ export declare class VoiceController {
     private handleBusyTranscript;
     private stageComposerTranscript;
     private submitComposerTranscript;
+    private submitBoundDraft;
     private enableNativeComposer;
     private disableNativeComposer;
     private beginObservedTurn;
@@ -76,4 +89,13 @@ export declare class VoiceController {
     private appendToDraft;
     private hasPendingDraft;
     private clearNativeSubmitPending;
+    private armDraftAutoSend;
+    private scheduleDraftAutoSend;
+    private isDraftAutoSendSafe;
+    private pauseDraftAutoSend;
+    private handleSpeechStart;
+    private handleSpeechEnd;
+    private validDraftAutoSendLease;
+    private disarmDraftAutoSend;
+    private updateDraftAutoSendStatus;
 }

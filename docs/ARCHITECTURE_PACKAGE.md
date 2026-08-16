@@ -6,9 +6,9 @@ This document is the handoff contract for the wider DSH plugin composition.
 
 - Repository: <https://github.com/zfu691531-hash/dsh-realtime-voice>
 - Default branch: `main`
-- Release line: `0.11.x`
-- Current release candidate: `v0.11.0`
-- Released commit: recorded by the immutable `v0.11.0` tag after release publication
+- Release line: `0.12.x`
+- Current release candidate: `v0.12.0`
+- Released commit: recorded by the immutable `v0.12.0` tag after release publication
 
 The exact released commit is recorded by the immutable Git tag and GitHub Release. Do not duplicate this repository or rewrite its history.
 
@@ -30,7 +30,8 @@ The optional OpenAI route uses the provider Realtime transport, but its mandator
 
 ## Audio, preemption, and trace contract
 
-- ASR finals merge across the configured continuation window; idle/empty composer input auto-submits, while speech captured during Harness/TTS appends to the native draft for explicit send or clear.
+- ASR finals merge across the configured continuation window; idle/empty composer input auto-submits, while speech captured during Harness/TTS appends to the native draft under an ASR-only lease. The lease can submit the whole draft only after Harness/TTS returns to listening and the configured dwell expires.
+- `speech_started` pauses the dwell before a final transcript exists. Only `speech_stopped` may arm a bounded no-final grace, so a long utterance cannot be cut by a guessed timeout. A merged final resets the dwell; keyboard edit/paste/clear/manual submit, stale draft/connection, voiceprint failure, explicit cancellation, or sensitive-action wording revokes it.
 - A single `TurnCoordinator` and single-writer TTS queue reject stale generations.
 - Floor timing starts only after the trace confirms a real `user/message` with `source.kind === 'user'`.
 - `assistant/chunk.text-delta` is visible answer text; `reasoning-delta` is ignored.
@@ -83,13 +84,14 @@ npm pack --json
 dsh plugin --profile web list
 ```
 
-`npm run check` covers typechecking, Host/routes/security, delegation/trace correlation, turn concurrency, floor timing, retry/tool invalidation, TTS sanitation, production build, and client-bundle purity.
+`npm run check` covers typechecking, Host/routes/security, delegation/trace correlation, turn concurrency, guarded draft dwell/auto-submit, floor timing, retry/tool invalidation, TTS sanitation, production build, and client-bundle purity.
 
 ## Current risks
 
 - Desktop rc.5 denies renderer microphone permission, so the plugin opens the same loopback session in the default browser.
 - Provider latency, quota, model/voice availability, and ASR accuracy remain external dependencies.
 - Optional voiceprint verification adds one provider request per completed utterance, can add latency, and cannot resist replay, synthesis, or targeted impersonation.
+- The no-voiceprint auto-send opt-in is intended only for a trusted single-user acoustic environment; background speech can still become text, so sensitive commands remain manual and downstream tools must keep their own confirmation policies.
 - A tool preamble that becomes audible before its later tool-call event cannot be unheard; the output contract prevents such preambles and the trace gate cancels any remaining audio immediately.
 - First-paragraph TTS intentionally fails closed for machine-shaped Markdown/JSON/HTML output.
 - OpenAI and Qwen provider contracts can change; upgrades require trace and signaling regression tests.

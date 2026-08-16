@@ -15,9 +15,15 @@ Configure the plugin from **Harness → Settings → Plugins → Realtime Voice 
 | Human voice threshold | `0.85` |
 | Endpoint silence | `700 ms` |
 | Segment merge window | `1200 ms` |
+| Auto-send captured follow-up draft | `enabled` |
+| Draft dwell after playback | `1800 ms` |
+| Allow without voiceprint | `disabled` |
+| Keep sensitive commands for confirmation | `enabled` |
 | Natural floor delay | `800 ms` |
 
 Provide `DASHSCOPE_API_KEY` through the Harness credential system. Do not paste the key into plugin settings.
+
+The draft dwell starts only after the previous Harness turn and TTS playback have both completed. Speaking again resets it. Typing, pasting, clearing, or manually sending revokes the automatic-send lease. If voiceprint is disabled, explicitly enable “无声纹时允许” to opt in on a trusted single-user machine; sensitive commands still remain manual by default.
 
 ## OpenAI route
 

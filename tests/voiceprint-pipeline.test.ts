@@ -95,7 +95,15 @@ test('a slow voiceprint request never blocks later ASR lifecycle events', async 
     await new Promise<void>(resolve => { resolveFetch = resolve })
     return new Response(JSON.stringify({ ok: true, approved: true, score: 90 }), { status: 200 })
   }
-  const connection = new QwenPipelineConnection(prefs(), { onState() {}, async onToolCall() {}, async onTranscript() {} })
+  let speechStarts = 0
+  let speechEnds = 0
+  const connection = new QwenPipelineConnection(prefs(), {
+    onState() {},
+    async onToolCall() {},
+    async onTranscript() {},
+    onSpeechStart: () => { speechStarts++ },
+    onSpeechEnd: () => { speechEnds++ },
+  })
   const internals = connection as unknown as PipelineInternals
   internals.voiceprintConfigured = true
   internals.voiceprintEnrolled = true
@@ -106,6 +114,8 @@ test('a slow voiceprint request never blocks later ASR lifecycle events', async 
     await internals.handleAsr(JSON.stringify({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'slow-1', transcript: '查询天气' }))
     await internals.handleAsr(JSON.stringify({ type: 'input_audio_buffer.speech_started', item_id: 'next-1' }))
     assert.equal(internals.utteranceBusy.has('next-1'), true)
+    assert.equal(speechStarts, 2)
+    assert.equal(speechEnds, 1)
     await new Promise(resolve => setTimeout(resolve, 0))
     resolveFetch()
     await internals.voiceprintDispatchTail
@@ -158,7 +168,14 @@ function prefs(): VoicePrefs {
     qwenVadThreshold: 0.85,
     qwenSilenceMs: 700,
     qwenMergeMs: 1200,
+    voiceDraftAutoSend: true,
+    voiceDraftDwellMs: 1800,
+    voiceDraftAllowWithoutVoiceprint: false,
+    voiceDraftSensitiveDeny: true,
     floorDelayMs: 800,
+    floorComposerEnabled: true,
+    qwenFloorModel: 'qwen3.5-flash',
+    openaiFloorModel: 'gpt-5-mini',
     voiceprintEnabled: true,
     voiceprintThreshold: 75,
     openaiModel: 'gpt-realtime-2.1',

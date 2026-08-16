@@ -30,7 +30,11 @@ export function MicButton({ controller }: { controller: VoiceController }) {
 }
 
 interface NativeInputProps {
-  input: { readonly draft: string }
+  input: {
+    readonly draft: string
+    readonly draftRev: number
+    readonly phase: 'plain' | 'adjudicating' | 'claimed' | 'submitting'
+  }
   inputActions: { setDraft(text: string): void; submit(): void }
 }
 
@@ -38,9 +42,11 @@ export function VoiceStatus({ controller, input, inputActions }: { controller: V
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot)
   useEffect(() => controller.bindDraft({
     getDraft: () => input.draft,
+    getDraftRev: () => input.draftRev,
+    getPhase: () => input.phase,
     setDraft: text => inputActions.setDraft(text),
     submit: () => inputActions.submit(),
-  }), [controller, input.draft, inputActions])
+  }), [controller, input.draft, input.draftRev, input.phase, inputActions])
   if (snapshot.state === 'idle') return null
   const labels: Record<string, string> = { connecting: '正在连接', listening: '正在聆听', speaking: '正在说话', working: 'Harness 正在执行', error: '语音不可用' }
   const continuePrefix = '继续任务：'
@@ -79,6 +85,12 @@ export function SettingsCard() {
         <Field label="人声阈值"><input style={styles.input} type="number" min={-1} max={1} step={0.05} value={prefs.qwenVadThreshold} onChange={e => updatePrefs({ qwenVadThreshold: e.currentTarget.valueAsNumber })} /></Field>
         <Field label="断句等待(ms)"><input style={styles.input} type="number" min={200} max={6000} step={100} value={prefs.qwenSilenceMs} onChange={e => updatePrefs({ qwenSilenceMs: e.currentTarget.valueAsNumber })} /></Field>
         <Field label="语段合并等待(ms)"><input style={styles.input} type="number" min={100} max={5000} step={100} value={prefs.qwenMergeMs} onChange={e => updatePrefs({ qwenMergeMs: e.currentTarget.valueAsNumber })} /></Field>
+        <Field label="后续语音自动发送"><input type="checkbox" checked={prefs.voiceDraftAutoSend} onChange={e => updatePrefs({ voiceDraftAutoSend: e.currentTarget.checked })} /></Field>
+        {prefs.voiceDraftAutoSend && <>
+          <Field label={`输入框停留(ms，≥${Math.max(500, prefs.qwenMergeMs)})`}><input style={styles.input} type="number" min={Math.max(500, prefs.qwenMergeMs)} max={6000} step={100} value={prefs.voiceDraftDwellMs} onChange={e => updatePrefs({ voiceDraftDwellMs: e.currentTarget.valueAsNumber })} /></Field>
+          <Field label="无声纹时允许"><input type="checkbox" checked={prefs.voiceDraftAllowWithoutVoiceprint} onChange={e => updatePrefs({ voiceDraftAllowWithoutVoiceprint: e.currentTarget.checked })} /></Field>
+          <Field label="敏感指令留待确认"><input type="checkbox" checked={prefs.voiceDraftSensitiveDeny} onChange={e => updatePrefs({ voiceDraftSensitiveDeny: e.currentTarget.checked })} /></Field>
+        </>}
         <Field label="本人声纹软门控"><input type="checkbox" checked={prefs.voiceprintEnabled} onChange={e => updatePrefs({ voiceprintEnabled: e.currentTarget.checked })} /></Field>
         {prefs.voiceprintEnabled && <>
           <Field label="声纹通过分数"><input style={styles.input} type="number" min={0} max={100} step={1} value={prefs.voiceprintThreshold} onChange={e => updatePrefs({ voiceprintThreshold: e.currentTarget.valueAsNumber })} /></Field>
@@ -102,7 +114,7 @@ export function SettingsCard() {
       <Field label="AI 灵活接场"><input type="checkbox" checked={prefs.floorComposerEnabled} onChange={e => updatePrefs({ floorComposerEnabled: e.currentTarget.checked })} /></Field>
       {prefs.floorComposerEnabled && <Field label="接场轻量模型"><input style={styles.input} value={prefs.provider === 'qwen' ? prefs.qwenFloorModel : prefs.openaiFloorModel} onChange={e => prefs.provider === 'qwen' ? updatePrefs({ qwenFloorModel: e.currentTarget.value }) : updatePrefs({ openaiFloorModel: e.currentTarget.value })} /></Field>}
       <Field label="播报风格"><textarea style={{ ...styles.input, minHeight: 84, resize: 'vertical' }} value={prefs.instructions} onChange={e => updatePrefs({ instructions: e.currentTarget.value })} /></Field>
-      <p style={{ opacity: .66, fontSize: 12, lineHeight: 1.55 }}>密钥不会进入浏览器或插件配置：请由 Harness 凭据系统提供 {prefs.provider === 'qwen' ? 'DASHSCOPE_API_KEY' : 'OPENAI_API_KEY'}。空闲且输入框为空时，千问识别出的完整语句会自动交给 Harness；Harness 推理或播报期间的新语音才保留在原生输入框，等待发送或清空。声纹为可选的抗干扰软门控：开启后，首句只用于腾讯云录入，之后未通过或服务异常的语音只写入输入框而不自动发送；它不能替代身份认证或高风险操作授权，需要 Harness 凭据 TENCENT_SECRET_ID / TENCENT_SECRET_KEY。Tina 属于 Omni，专用 TTS 不支持；默认改用最接近其风格的 Chelsie。桌面壳当前禁用麦克风，点击话筒会在外部浏览器打开同一会话。</p>
+      <p style={{ opacity: .66, fontSize: 12, lineHeight: 1.55 }}>密钥不会进入浏览器或插件配置：请由 Harness 凭据系统提供 {prefs.provider === 'qwen' ? 'DASHSCOPE_API_KEY' : 'OPENAI_API_KEY'}。空闲且输入框为空时，完整语句会立即交给 Harness；推理或播报期间的新语音会完整合并在原生输入框，播报结束并停留指定时间后再自动发送。继续说会重置计时，键盘编辑、粘贴、清空或手动发送会取消自动发送。声纹拒绝和敏感指令始终保留为手动确认；未配置声纹时需显式开启“无声纹时允许”。声纹不能替代身份认证或高风险操作授权，需要 Harness 凭据 TENCENT_SECRET_ID / TENCENT_SECRET_KEY。Tina 属于 Omni，专用 TTS 不支持；默认改用最接近其风格的 Chelsie。桌面壳当前禁用麦克风，点击话筒会在外部浏览器打开同一会话。</p>
     </div>}
   </li>
 }

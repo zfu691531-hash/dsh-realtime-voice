@@ -13,6 +13,10 @@ export interface VoicePrefs {
   qwenVadThreshold: number
   qwenSilenceMs: number
   qwenMergeMs: number
+  voiceDraftAutoSend: boolean
+  voiceDraftDwellMs: number
+  voiceDraftAllowWithoutVoiceprint: boolean
+  voiceDraftSensitiveDeny: boolean
   floorDelayMs: number
   floorComposerEnabled: boolean
   qwenFloorModel: string
@@ -38,6 +42,10 @@ const DEFAULTS: VoicePrefs = {
   qwenVadThreshold: 0.85,
   qwenSilenceMs: 700,
   qwenMergeMs: 1200,
+  voiceDraftAutoSend: true,
+  voiceDraftDwellMs: 1800,
+  voiceDraftAllowWithoutVoiceprint: false,
+  voiceDraftSensitiveDeny: true,
   floorDelayMs: 800,
   floorComposerEnabled: true,
   qwenFloorModel: 'qwen3.5-flash',
@@ -96,6 +104,10 @@ function hasCustomPrefs(prefs: VoicePrefs): boolean {
     || prefs.qwenVadThreshold !== DEFAULTS.qwenVadThreshold
     || prefs.qwenSilenceMs !== DEFAULTS.qwenSilenceMs
     || prefs.qwenMergeMs !== DEFAULTS.qwenMergeMs
+    || prefs.voiceDraftAutoSend !== DEFAULTS.voiceDraftAutoSend
+    || prefs.voiceDraftDwellMs !== DEFAULTS.voiceDraftDwellMs
+    || prefs.voiceDraftAllowWithoutVoiceprint !== DEFAULTS.voiceDraftAllowWithoutVoiceprint
+    || prefs.voiceDraftSensitiveDeny !== DEFAULTS.voiceDraftSensitiveDeny
     || prefs.floorDelayMs !== DEFAULTS.floorDelayMs
     || prefs.floorComposerEnabled !== DEFAULTS.floorComposerEnabled
     || prefs.qwenFloorModel !== DEFAULTS.qwenFloorModel
@@ -136,6 +148,7 @@ export function subscribePrefs(listener: () => void): () => void {
 }
 
 function sanitize(value: VoicePrefs): VoicePrefs {
+  const qwenMergeMs = numberInRange(value.qwenMergeMs, 100, 5000, DEFAULTS.qwenMergeMs)
   return {
     provider: value.provider === 'openai' ? 'openai' : 'qwen',
     qwenWorkspaceId: text(value.qwenWorkspaceId, 128),
@@ -147,7 +160,11 @@ function sanitize(value: VoicePrefs): VoicePrefs {
     qwenTtsVoice: text(value.qwenTtsVoice, 128) || DEFAULTS.qwenTtsVoice,
     qwenVadThreshold: numberInRange(value.qwenVadThreshold, -1, 1, DEFAULTS.qwenVadThreshold),
     qwenSilenceMs: numberInRange(value.qwenSilenceMs, 200, 6000, DEFAULTS.qwenSilenceMs),
-    qwenMergeMs: numberInRange(value.qwenMergeMs, 100, 5000, DEFAULTS.qwenMergeMs),
+    qwenMergeMs,
+    voiceDraftAutoSend: value.voiceDraftAutoSend !== false,
+    voiceDraftDwellMs: Math.max(qwenMergeMs, numberInRange(value.voiceDraftDwellMs, 500, 6000, DEFAULTS.voiceDraftDwellMs)),
+    voiceDraftAllowWithoutVoiceprint: value.voiceDraftAllowWithoutVoiceprint === true,
+    voiceDraftSensitiveDeny: value.voiceDraftSensitiveDeny !== false,
     floorDelayMs: numberInRange(value.floorDelayMs, 400, 3000, DEFAULTS.floorDelayMs),
     floorComposerEnabled: value.floorComposerEnabled !== false,
     qwenFloorModel: text(value.qwenFloorModel, 128) || DEFAULTS.qwenFloorModel,

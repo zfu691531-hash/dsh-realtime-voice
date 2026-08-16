@@ -5,6 +5,8 @@ export declare function MicButton({ controller }: {
 interface NativeInputProps {
     input: {
         readonly draft: string;
+        readonly draftRev: number;
+        readonly phase: 'plain' | 'adjudicating' | 'claimed' | 'submitting';
     };
     inputActions: {
         setDraft(text: string): void;

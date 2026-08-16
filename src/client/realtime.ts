@@ -1,13 +1,17 @@
 import type { VoicePrefs } from './prefs.ts'
 import { parseToolCall, sessionUpdate, toolOutput, type ToolCall } from './protocol.ts'
 
+export interface TranscriptMeta {
+  capturedWhileBusy?: boolean
+  voiceprint?: 'approved' | 'rejected' | 'unavailable'
+}
+
 export interface RealtimeCallbacks {
   onState(state: 'connecting' | 'listening' | 'speaking' | 'error', detail?: string): void
   onToolCall(call: ToolCall): Promise<unknown>
-  onTranscript?(text: string, meta?: {
-    capturedWhileBusy?: boolean
-    voiceprint?: 'approved' | 'rejected' | 'unavailable'
-  }): Promise<void>
+  onSpeechStart?(): void
+  onSpeechEnd?(): void
+  onTranscript?(text: string, meta?: TranscriptMeta): Promise<void>
 }
 
 export class RealtimeConnection {
@@ -128,9 +132,11 @@ export class RealtimeConnection {
       this.callbacks.onState('listening')
     }
     if (type === 'input_audio_buffer.speech_started') {
+      this.callbacks.onSpeechStart?.()
       if (this.responseActive) this.send({ type: 'response.cancel' })
       this.callbacks.onState('listening')
     }
+    if (type === 'input_audio_buffer.speech_stopped') this.callbacks.onSpeechEnd?.()
     if (type === 'response.created') this.responseActive = true
     if (type === 'response.audio.delta' || type === 'response.audio_transcript.delta') this.callbacks.onState('speaking')
     if (type === 'response.done') { this.responseActive = false; this.callbacks.onState('listening') }

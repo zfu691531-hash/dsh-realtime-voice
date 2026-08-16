@@ -1,6 +1,6 @@
 # dsh-realtime-voice
 
-DeepSeek Harness 的轻量实时语音插件。不包含 Docker、Python或本地模型。千问线路是确定性的三段式管线：浏览器采集 PCM，Harness Host 以同源 WebSocket 代理专用 ASR/TTS；空闲时完整语句经原生输入框自动交给当前 Harness 会话，忙时的新语音留在输入框等待用户发送或清空，语音厂商没有独立回答的机会。
+DeepSeek Harness 的轻量实时语音插件。不包含 Docker、Python或本地模型。千问线路是确定性的三段式管线：浏览器采集 PCM，Harness Host 以同源 WebSocket 代理专用 ASR/TTS；空闲时完整语句经原生输入框自动交给当前 Harness 会话，忙时的新语音先合并到输入框，播报结束后按可配置停留时间安全续发，语音厂商没有独立回答的机会。
 
 ![DeepSeek Harness 实时语音插件设置](https://raw.githubusercontent.com/zfu691531-hash/dsh-realtime-voice/main/screenshots/settings.png)
 
@@ -9,11 +9,12 @@ DeepSeek Harness 的轻量实时语音插件。不包含 Docker、Python或本�
 - 国内线路：`qwen3-asr-flash-realtime → DeepSeek Harness → qwen3-tts-flash-realtime`（阿里云百炼，北京/新加坡）。
 - 全球线路：`gpt-realtime-2.1`（OpenAI Realtime）。
 - 千问使用两个独立语音模型：ASR 只转写，TTS 只播报；不再使用 Omni Realtime 作为对话模型。
-- ASR final 统一经过原生输入框：空闲且输入框为空时，在续说窗口结束后自动调用原生发送；Harness 推理或播报期间、以及输入框已有待处理文字时，只追加草稿等待用户发送或清空。推理、记忆、联网、插件与工具调度全部由 Harness 完成。
+- ASR final 统一经过原生输入框：空闲且输入框为空时，在续说窗口结束后自动调用原生发送；Harness 推理或播报期间捕获的后续语音先取得一个仅限 ASR 草稿的发送租约，全部播报结束后再等待默认 `1800ms`，期间没有续说或键盘编辑才提交完整草稿。推理、记忆、联网、插件与工具调度全部由 Harness 完成。
 - VAD 默认 `threshold=0.85`、尾静音 `700ms`，并关闭浏览器自动增益以优先近讲。ASR final 先进入候选断句，再等待 `1200ms` 的续说窗口；从停顿开始约 `1.9s` 才提交 Harness，期间继续说话仍属于同一轮。
 - 严格的 `TurnCoordinator` 为每轮分配唯一 ID，并串行处理 ASR 状态事件；旧轮的迟到回调不能再启动 Harness、覆盖新轮或播放过期语音。
 - Harness 执行工具期间，普通背景转写不会再取消当前任务；只有明确说“停止 / 取消 / 算了”才会中止。
-- Harness 正在推理或 TTS 正在播报时，新语音只追加到原生输入框；播报结束后不会跳过这些文字。输入框有待处理内容时，后续识别继续合并，直到用户发送或清空；输入框为空才恢复下一轮自动提交。
+- Harness 正在推理或 TTS 正在播报时，新语音只追加到原生输入框；播报结束后不会跳过这些文字。新的 `speech_started` 会暂停倒计时，只有 `speech_stopped` 后才允许恢复，后续 ASR final 合并后重新计时；键盘编辑、粘贴、清空、手动发送、连接停止或草稿版本不匹配都会撤销自动发送，避免长句中途提交和重复提交。
+- 后续草稿自动发送默认开启，但默认要求已通过声纹；未启用声纹时需在设置中显式允许。声纹拒绝/不可用、取消口令，以及转账、支付、删除、关机等敏感文本只保留在输入框等待人工确认。
 - 语音模式开启期间，插件旁路观察用户手动提交的原生 Harness turn，流式提取口语摘要并交给 TTS；不需要插件再次提交相同消息。
 - TTS 使用 24kHz PCM 流式播放。播报期间麦克风音频先留在浏览器本地，不会直接污染云端 ASR；经过播放预热且检测到至少 `500ms` 持续近讲后，才暂停播放器并把带预卷的候选音频交给 ASR。
 - 候选插话经过文本有效性与播报回声相似度复核；误触发会恢复原播报，确认插话才停止 TTS。插话文字只进入原生输入框，等待用户发送或清空，不会自动抢开第二个 Harness 任务。
@@ -29,7 +30,7 @@ DeepSeek Harness 的轻量实时语音插件。不包含 Docker、Python或本�
 推荐直接从带版本标签的 GitHub 仓库安装：
 
 ```bash
-dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.11.0
+dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.12.0
 ```
 
 仓库提交预构建 `lib/`，因此这条命令不需要本机 TypeScript、源码 checkout 或 pnpm `allowBuilds`。重启 DeepSeek Harness 后，在“设置 → 插件”展开“实时语音（千问 / GPT）”。
@@ -37,7 +38,7 @@ dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.11.0
 也可以下载同版本 GitHub Release 中的预构建 tarball 后执行：
 
 ```bash
-dsh plugin --profile web add ./dsh-realtime-voice-0.11.0.tgz
+dsh plugin --profile web add ./dsh-realtime-voice-0.12.0.tgz
 ```
 
 也可以从源码自行验收并打包：
@@ -85,7 +86,7 @@ await fetch('/dsh-realtime-voice/status').then(response => response.json())
 - OpenAI：`OPENAI_API_KEY`。
 - 可选声纹：`TENCENT_SECRET_ID` 与 `TENCENT_SECRET_KEY`。声纹音频会按用户显式启用发送到腾讯云说话人验证服务；插件只持久化腾讯云返回的不透明 VoicePrintId，不持久化录音或声纹特征。
 
-插件设置只保存 provider、Workspace ID、ASR/TTS 模型、TTS 音色、VAD 参数、声纹开关/阈值和播报风格；不保存 Key。声纹 ID 只存 Host 设置且不会返回浏览器，原始 PCM 仅在当前 utterance 的内存中短暂存在。千问默认使用北京区、`qwen3-asr-flash-realtime`、`qwen3-tts-flash-realtime` 和 `Chelsie`；OpenAI 默认使用 `gpt-realtime-2.1` 和 `marin`。`Tina` 是 Omni 专属音色，独立 TTS 不支持；`Chelsie` 是专用 TTS 中更接近其软糯亲昵风格的选择。
+插件设置只保存 provider、Workspace ID、ASR/TTS 模型、TTS 音色、VAD/语段合并/草稿停留参数、声纹开关/阈值和播报风格；不保存 Key。声纹 ID 只存 Host 设置且不会返回浏览器，原始 PCM 仅在当前 utterance 的内存中短暂存在。千问默认使用北京区、`qwen3-asr-flash-realtime`、`qwen3-tts-flash-realtime` 和 `Chelsie`；OpenAI 默认使用 `gpt-realtime-2.1` 和 `marin`。`Tina` 是 Omni 专属音色，独立 TTS 不支持；`Chelsie` 是专用 TTS 中更接近其软糯亲昵风格的选择。
 
 ## 桌面版 rc.5 的麦克风限制
 
