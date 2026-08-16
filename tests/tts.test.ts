@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { isLikelyTtsEcho, LocalBargeInGate, splitForTts } from '../src/client/qwen-pipeline.ts'
+import { isLikelyTtsEcho, LocalBargeInGate, QwenPipelineConnection, splitForTts } from '../src/client/qwen-pipeline.ts'
+import type { VoicePrefs } from '../src/client/prefs.ts'
 
 test('TTS chunks remove code and remain below the weighted limit', () => {
   const chunks = splitForTts(`<!-- /voice-summary -->这是最终答案。\n\`\`\`json\n{"private":"tool payload"}\n\`\`\`\n更多说明：${'很长的中文句子。'.repeat(180)}`, 200)
@@ -38,6 +39,57 @@ test('local barge-in requires playback warmup and 500ms sustained near-field aud
   gate.reset()
   assert.equal(gate.push(loud, 900).forward, false)
 })
+
+test('TTS rechecks the speech generation between text chunks', async () => {
+  const originalWebSocket = globalThis.WebSocket
+  class WebSocketState { static readonly OPEN = 1 }
+  Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: WebSocketState })
+  try {
+    const connection = new QwenPipelineConnection(prefs(), { onState() {}, async onToolCall() {} })
+    const internals = connection as unknown as {
+      tts?: WebSocket
+      ttsReady?: Promise<void>
+      handleTts(raw: unknown): void
+    }
+    let commits = 0
+    internals.tts = {
+      readyState: WebSocketState.OPEN,
+      send(raw: string) {
+        const event = JSON.parse(raw) as { type?: string }
+        if (event.type !== 'input_text_buffer.commit') return
+        commits++
+        internals.handleTts(JSON.stringify({ type: 'response.done' }))
+        if (commits === 1) connection.cancelSpeech()
+      },
+    } as WebSocket
+    internals.ttsReady = Promise.resolve()
+
+    await assert.rejects(connection.speak('很长的中文句子。'.repeat(180)), /语音已被替换/)
+    assert.equal(commits, 1)
+  } finally {
+    Object.defineProperty(globalThis, 'WebSocket', { configurable: true, value: originalWebSocket })
+  }
+})
+
+function prefs(): VoicePrefs {
+  return {
+    provider: 'qwen',
+    qwenWorkspaceId: 'ws_123',
+    qwenRegion: 'cn-beijing',
+    qwenModel: 'qwen3.5-omni-plus-realtime',
+    qwenVoice: 'Tina',
+    qwenAsrModel: 'qwen3-asr-flash-realtime',
+    qwenTtsModel: 'qwen3-tts-flash-realtime',
+    qwenTtsVoice: 'Chelsie',
+    qwenVadThreshold: 0.85,
+    qwenSilenceMs: 700,
+    qwenMergeMs: 1200,
+    floorDelayMs: 800,
+    openaiModel: 'gpt-realtime-2.1',
+    openaiVoice: 'marin',
+    instructions: '',
+  }
+}
 
 function pcm(amplitude: number, samples: number): Int16Array {
   const output = new Int16Array(samples)
