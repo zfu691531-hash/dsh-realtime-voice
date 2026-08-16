@@ -7,7 +7,17 @@ export interface FloorTimings {
   progressDelayMs?: number
   longWaitMs?: number
   maxCues?: number
+  resolveCue?: FloorCueResolver
 }
+
+export interface FloorCueRequest {
+  task: string
+  stage: FloorStage
+  ordinal: number
+  previousCues: string[]
+}
+
+export type FloorCueResolver = (request: FloorCueRequest, signal: AbortSignal) => Promise<string | undefined>
 
 /**
  * A latency race, not a second answering agent. Harness remains the only
@@ -24,6 +34,9 @@ export class FloorManager {
   private readonly progressDelayMs: number
   private readonly longWaitMs: number
   private readonly maxCues: number
+  private readonly resolveCue?: FloorCueResolver
+  private generation = 0
+  private requestAbort?: AbortController
 
   constructor(
     private readonly delayMs: number,
@@ -33,6 +46,7 @@ export class FloorManager {
     this.progressDelayMs = timings.progressDelayMs ?? 3_500
     this.longWaitMs = timings.longWaitMs ?? 7_000
     this.maxCues = timings.maxCues ?? 3
+    this.resolveCue = timings.resolveCue
   }
 
   start(task = ''): void {
@@ -48,6 +62,8 @@ export class FloorManager {
   /** A visible final-answer delta owns the floor immediately. */
   resultAvailable(): void {
     this.resultStarted = true
+    this.generation++
+    this.requestAbort?.abort()
     this.cancelTimer()
   }
 
@@ -64,21 +80,39 @@ export class FloorManager {
 
   dispose(): void {
     this.disposed = true
+    this.generation++
+    this.requestAbort?.abort()
     this.cancelTimer()
   }
 
   private schedule(stage: FloorStage, delayMs: number): void {
     if (this.disposed || this.resultStarted || this.cueCount >= this.maxCues) return
     this.cancelTimer()
-    this.timer = setTimeout(() => {
+    this.requestAbort?.abort()
+    const generation = ++this.generation
+    const controller = new AbortController()
+    this.requestAbort = controller
+    const request: FloorCueRequest = {
+      task: this.task,
+      stage,
+      ordinal: this.cueCount,
+      previousCues: [...this.previousCues],
+    }
+    // Start at t=0; delayMs only gates when speech may take the floor.
+    let generated: Promise<string | undefined> | undefined
+    try {
+      generated = this.resolveCue === undefined
+        ? undefined
+        : Promise.resolve(this.resolveCue(request, controller.signal)).catch(() => undefined)
+    } catch {
+      generated = Promise.resolve(undefined)
+    }
+    this.timer = setTimeout(async () => {
       this.timer = undefined
-      if (this.disposed || this.resultStarted || this.cueCount >= this.maxCues) return
-      const cue = composeFloorCue({
-        task: this.task,
-        stage,
-        ordinal: this.cueCount,
-        previousCues: this.previousCues,
-      })
+      if (generation !== this.generation || this.disposed || this.resultStarted || this.cueCount >= this.maxCues) return
+      const cue = await resolveWithin(generated, 500, controller.signal)
+        ?? (this.resolveCue === undefined ? composeFloorCue(request) : '嗯，我先看一下。')
+      if (generation !== this.generation || this.disposed || this.resultStarted || controller.signal.aborted) return
       this.previousCues.push(cue)
       this.cueCount++
       this.emit(cue)
@@ -91,6 +125,25 @@ export class FloorManager {
   private cancelTimer(): void {
     if (this.timer !== undefined) clearTimeout(this.timer)
     this.timer = undefined
+  }
+}
+
+async function resolveWithin(
+  pending: Promise<string | undefined> | undefined,
+  timeoutMs: number,
+  signal: AbortSignal,
+): Promise<string | undefined> {
+  if (pending === undefined) return undefined
+  try {
+    return await Promise.race([
+      pending,
+      new Promise<undefined>(resolve => {
+        const timer = setTimeout(() => resolve(undefined), timeoutMs)
+        signal.addEventListener('abort', () => { clearTimeout(timer); resolve(undefined) }, { once: true })
+      }),
+    ])
+  } catch {
+    return undefined
   }
 }
 

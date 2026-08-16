@@ -13,14 +13,14 @@ https://github.com/zfu691531-hash/dsh-realtime-voice
 
 插件通过标准 `dsh.bundle` manifest 安装：Host 侧代理上游语音 WebSocket 并从 Harness 凭据服务读取 API Key，浏览器侧只处理麦克风、VAD、原生输入框和流式播放。Key 不进入浏览器、本地存储、包文件或日志。
 
-v0.10 增加两项能力：一是轨迹感知的动态接场，根据任务主题、意图、Harness 工具/重试事件和等待阶段组合不重复的自然短句，不启动第二个回答 Agent；二是千问线路可选的腾讯云声纹软门控，未通过或服务异常的语音只进入原生输入框，不自动触发 Harness。声纹仅用于降低他人说话造成的误触发，不是身份认证或高风险操作授权。
+v0.11 把接场升级为真正的模型生成：插件在 Harness 开始处理时并行请求当前语音供应商的轻量文本模型，只发送脱敏后的短主题、阶段枚举和此前安全接场句；健康路径不再使用固定候选话术。Harness 仍是唯一负责结论、推理和工具的“脑子”，接场句不进入历史，结果一到立即取消。v0.10 的腾讯云声纹软门控继续保留。
 
 ## 安装
 
 仓库按 DSH bundle 规范提交预构建产物，固定标签后一条命令安装，不需要允许 git 依赖执行构建脚本：
 
 ```bash
-dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.10.0
+dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.11.0
 ```
 
 重启 Harness 后，在“设置 → 插件”配置“实时语音（千问 / GPT）”。千问需要在 Harness 凭据中提供 `DASHSCOPE_API_KEY`，并填写同区域的百炼 Workspace ID。可选声纹还需要 `TENCENT_SECRET_ID` 与 `TENCENT_SECRET_KEY`；启用后首句只用于录入，之后再重复实际指令。

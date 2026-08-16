@@ -38,6 +38,10 @@ Subsequent utterances are verified before automatic submission. A rejected utter
 
 This feature reduces accidental activation by other speakers. It does not establish identity, resist replay/deepfake attacks, or authorize sensitive actions.
 
+## AI dynamic floor speech
+
+“AI 灵活接场” is enabled by default and uses the existing `DASHSCOPE_API_KEY` or `OPENAI_API_KEY`. It sends only a Host-redacted topic (maximum 18 characters), the current waiting-stage enum, and prior validated cues to the configured lightweight model. The generated sentence is ephemeral: it does not enter Harness history and cannot see reasoning or tool payloads. Disable the toggle to use the deterministic local fallback only.
+
 ## Doctor
 
 ```bash

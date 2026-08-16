@@ -99,6 +99,8 @@ export function SettingsCard() {
         <Field label="声音"><input style={styles.input} value={prefs.openaiVoice} onChange={e => updatePrefs({ openaiVoice: e.currentTarget.value })} /></Field>
       </>}
       <Field label="自然接场等待(ms)"><input style={styles.input} type="number" min={400} max={3000} step={100} value={prefs.floorDelayMs} onChange={e => updatePrefs({ floorDelayMs: e.currentTarget.valueAsNumber })} /></Field>
+      <Field label="AI 灵活接场"><input type="checkbox" checked={prefs.floorComposerEnabled} onChange={e => updatePrefs({ floorComposerEnabled: e.currentTarget.checked })} /></Field>
+      {prefs.floorComposerEnabled && <Field label="接场轻量模型"><input style={styles.input} value={prefs.provider === 'qwen' ? prefs.qwenFloorModel : prefs.openaiFloorModel} onChange={e => prefs.provider === 'qwen' ? updatePrefs({ qwenFloorModel: e.currentTarget.value }) : updatePrefs({ openaiFloorModel: e.currentTarget.value })} /></Field>}
       <Field label="播报风格"><textarea style={{ ...styles.input, minHeight: 84, resize: 'vertical' }} value={prefs.instructions} onChange={e => updatePrefs({ instructions: e.currentTarget.value })} /></Field>
       <p style={{ opacity: .66, fontSize: 12, lineHeight: 1.55 }}>密钥不会进入浏览器或插件配置：请由 Harness 凭据系统提供 {prefs.provider === 'qwen' ? 'DASHSCOPE_API_KEY' : 'OPENAI_API_KEY'}。空闲且输入框为空时，千问识别出的完整语句会自动交给 Harness；Harness 推理或播报期间的新语音才保留在原生输入框，等待发送或清空。声纹为可选的抗干扰软门控：开启后，首句只用于腾讯云录入，之后未通过或服务异常的语音只写入输入框而不自动发送；它不能替代身份认证或高风险操作授权，需要 Harness 凭据 TENCENT_SECRET_ID / TENCENT_SECRET_KEY。Tina 属于 Omni，专用 TTS 不支持；默认改用最接近其风格的 Chelsie。桌面壳当前禁用麦克风，点击话筒会在外部浏览器打开同一会话。</p>
     </div>}

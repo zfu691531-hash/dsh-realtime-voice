@@ -14,6 +14,9 @@ export interface VoicePrefs {
   qwenSilenceMs: number
   qwenMergeMs: number
   floorDelayMs: number
+  floorComposerEnabled: boolean
+  qwenFloorModel: string
+  openaiFloorModel: string
   voiceprintEnabled: boolean
   voiceprintThreshold: number
   openaiModel: string
@@ -36,6 +39,9 @@ const DEFAULTS: VoicePrefs = {
   qwenSilenceMs: 700,
   qwenMergeMs: 1200,
   floorDelayMs: 800,
+  floorComposerEnabled: true,
+  qwenFloorModel: 'qwen3.5-flash',
+  openaiFloorModel: 'gpt-5-mini',
   voiceprintEnabled: false,
   voiceprintThreshold: 75,
   openaiModel: 'gpt-realtime-2.1',
@@ -91,6 +97,9 @@ function hasCustomPrefs(prefs: VoicePrefs): boolean {
     || prefs.qwenSilenceMs !== DEFAULTS.qwenSilenceMs
     || prefs.qwenMergeMs !== DEFAULTS.qwenMergeMs
     || prefs.floorDelayMs !== DEFAULTS.floorDelayMs
+    || prefs.floorComposerEnabled !== DEFAULTS.floorComposerEnabled
+    || prefs.qwenFloorModel !== DEFAULTS.qwenFloorModel
+    || prefs.openaiFloorModel !== DEFAULTS.openaiFloorModel
     || prefs.voiceprintEnabled !== DEFAULTS.voiceprintEnabled
     || prefs.voiceprintThreshold !== DEFAULTS.voiceprintThreshold
     || prefs.openaiModel !== DEFAULTS.openaiModel
@@ -140,6 +149,9 @@ function sanitize(value: VoicePrefs): VoicePrefs {
     qwenSilenceMs: numberInRange(value.qwenSilenceMs, 200, 6000, DEFAULTS.qwenSilenceMs),
     qwenMergeMs: numberInRange(value.qwenMergeMs, 100, 5000, DEFAULTS.qwenMergeMs),
     floorDelayMs: numberInRange(value.floorDelayMs, 400, 3000, DEFAULTS.floorDelayMs),
+    floorComposerEnabled: value.floorComposerEnabled !== false,
+    qwenFloorModel: text(value.qwenFloorModel, 128) || DEFAULTS.qwenFloorModel,
+    openaiFloorModel: text(value.openaiFloorModel, 128) || DEFAULTS.openaiFloorModel,
     voiceprintEnabled: value.voiceprintEnabled === true,
     voiceprintThreshold: numberInRange(value.voiceprintThreshold, 0, 100, DEFAULTS.voiceprintThreshold),
     openaiModel: text(value.openaiModel, 128) || DEFAULTS.openaiModel,
