@@ -67,6 +67,12 @@ interface HostContext {
 export interface HostDependencies {
     exchangeOpenAi(request: SignalRequest, key: string, signal: AbortSignal): Promise<string>;
     exchangeQwen(request: SignalRequest, key: string, signal: AbortSignal): Promise<string>;
+    voiceprintEnroll(audio: string, secretId: string, secretKey: string, signal: AbortSignal): Promise<string>;
+    voiceprintVerify(audio: string, voiceprintId: string, secretId: string, secretKey: string, signal: AbortSignal): Promise<{
+        decision: boolean;
+        score: number;
+    }>;
+    voiceprintDelete(voiceprintId: string, secretId: string, secretKey: string, signal: AbortSignal): Promise<void>;
 }
 export declare function apply(ctx: HostContext, dependencies?: HostDependencies): void;
 export declare function isHostDependencies(value: unknown): value is HostDependencies;

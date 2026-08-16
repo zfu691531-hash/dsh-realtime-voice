@@ -15,4 +15,6 @@ Include the affected version, provider, reproduction steps, impact, and a minima
 - Provider keys are resolved only by the Harness Host credential service and must never enter browser storage, plugin settings, logs, screenshots, or bug reports.
 - HTTP and WebSocket bridges accept loopback same-origin requests only; provider region and endpoint selection are allowlisted.
 - ASR text is submitted to the active Harness session. TTS receives only the first visible answer paragraph, never reasoning blocks or tool payloads.
+- Optional voiceprint gating is off by default. When explicitly enabled, 16kHz mono PCM for one utterance is sent to Tencent Cloud for enrollment or verification; raw audio and embeddings are not persisted. Only the opaque provider identifier is stored on the Host and it is never returned to the browser.
+- Voiceprint is an interference-reduction signal, not authentication or authorization. A rejection or provider failure prevents automatic submission but preserves the transcript for deliberate manual sending. High-risk actions still require Harness policy and user confirmation.
 - The plugin does not bypass provider geography, account policy, or user consent requirements.

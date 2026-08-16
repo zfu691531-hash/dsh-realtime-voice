@@ -27,15 +27,22 @@ function response() {
   }
 }
 
-function fixture(configured: boolean) {
+function fixture(configured: boolean, initialPrefs: Record<string, unknown> = {}) {
   const routes = new Map<string, (req: never, res: never) => Promise<void> | void>()
   const upgrades = new Map<string, (req: never, socket: never, head: Buffer) => Promise<void> | void>()
   const disposers: Array<() => void> = []
   let exchanged = 0
+  let voiceprintEnrolls = 0
+  let voiceprintVerifies = 0
+  let voiceprintDeletes = 0
+  let storedPrefs: Record<string, unknown> = { voiceprintThreshold: 75, ...initialPrefs }
   let voiceContextProvider: ((context: { agent?: { id: string } }) => string) | undefined
   const dependencies: HostDependencies = {
     exchangeOpenAi: async () => { exchanged++; return 'v=0\r\na=answer\r\n' },
     exchangeQwen: async () => { exchanged++; return 'v=0\r\na=answer\r\n' },
+    voiceprintEnroll: async () => { voiceprintEnrolls++; return 'voiceprint-test-id' },
+    voiceprintVerify: async () => { voiceprintVerifies++; return { decision: true, score: 88 } },
+    voiceprintDelete: async () => { voiceprintDeletes++ },
   }
   const ctx = {
     credentials: {
@@ -59,11 +66,30 @@ function fixture(configured: boolean) {
       },
     },
     effect(callback: () => void | (() => void)) { const dispose = callback(); if (typeof dispose === 'function') disposers.push(dispose) },
-    get() { return undefined },
+    get(name: string) {
+      if (name !== 'settings') return undefined
+      return {
+        register() {
+          return {
+            get: () => storedPrefs,
+            update: async (patch: Record<string, unknown>) => { storedPrefs = { ...storedPrefs, ...patch } },
+          }
+        },
+        describe: () => [{ ns: 'dsh-realtime-voice', user: storedPrefs }],
+      }
+    },
     logger: { info() {}, warn() {} },
   }
   apply(ctx as never, dependencies)
-  return { routes, upgrades, disposers, exchanged: () => exchanged, voiceContext: (sessionId: string) => voiceContextProvider?.({ agent: { id: sessionId } }) ?? '' }
+  return {
+    routes,
+    upgrades,
+    disposers,
+    exchanged: () => exchanged,
+    voiceprintCalls: () => ({ enrolls: voiceprintEnrolls, verifies: voiceprintVerifies, deletes: voiceprintDeletes }),
+    storedPrefs: () => storedPrefs,
+    voiceContext: (sessionId: string) => voiceContextProvider?.({ agent: { id: sessionId } }) ?? '',
+  }
 }
 
 test('host routes dispose cleanly and can be mounted again', () => {
@@ -74,6 +100,7 @@ test('host routes dispose cleanly and can be mounted again', () => {
     '/dsh-realtime-voice/signaling/openai',
     '/dsh-realtime-voice/signaling/qwen',
     '/dsh-realtime-voice/status',
+    '/dsh-realtime-voice/voiceprint',
   ])
   assert.deepEqual([...one.upgrades.keys()].sort(), [
     '/dsh-realtime-voice/asr/qwen',
@@ -83,7 +110,7 @@ test('host routes dispose cleanly and can be mounted again', () => {
   assert.equal(one.routes.size, 0)
   assert.equal(one.upgrades.size, 0)
   const two = fixture(false)
-  assert.equal(two.routes.size, 5)
+  assert.equal(two.routes.size, 6)
   assert.equal(two.upgrades.size, 2)
 })
 
@@ -155,6 +182,111 @@ test('cross-site signaling is rejected before credential resolution', async () =
   assert.equal(fx.exchanged(), 0)
 })
 
+test('voiceprint enrollment, verification and deletion keep the opaque id on the host', async () => {
+  const fx = fixture(true)
+  const audio = Buffer.alloc(32_000).toString('base64')
+  const enroll = response()
+  await fx.routes.get('/dsh-realtime-voice/voiceprint')?.(
+    request({ operation: 'enroll', audio }) as never,
+    enroll.value as never,
+  )
+  assert.equal(enroll.result.status, 200)
+  assert.equal(fx.storedPrefs().voiceprintId, 'voiceprint-test-id')
+  assert.doesNotMatch(enroll.result.body, /voiceprint-test-id/)
+
+  const status = response()
+  await fx.routes.get('/dsh-realtime-voice/status')?.(request({}, 'GET') as never, status.value as never)
+  assert.equal(status.result.status, 200)
+  assert.equal(JSON.parse(status.result.body).voiceprint.enrolled, true)
+  assert.doesNotMatch(status.result.body, /voiceprint-test-id/)
+
+  const prefs = response()
+  await fx.routes.get('/dsh-realtime-voice/prefs')?.(request({}, 'GET') as never, prefs.value as never)
+  assert.equal(prefs.result.status, 200)
+  assert.doesNotMatch(prefs.result.body, /voiceprint-test-id/)
+
+  const verify = response()
+  await fx.routes.get('/dsh-realtime-voice/voiceprint')?.(
+    request({ operation: 'verify', audio }) as never,
+    verify.value as never,
+  )
+  assert.equal(verify.result.status, 200)
+  assert.deepEqual(JSON.parse(verify.result.body), { ok: true, approved: true, score: 88 })
+
+  const higherThreshold = response()
+  await fx.routes.get('/dsh-realtime-voice/prefs')?.(
+    request({ voiceprintEnabled: true, voiceprintThreshold: 90 }, 'PUT') as never,
+    higherThreshold.value as never,
+  )
+  assert.equal(higherThreshold.result.status, 200)
+  const belowThreshold = response()
+  await fx.routes.get('/dsh-realtime-voice/voiceprint')?.(
+    request({ operation: 'verify', audio }) as never,
+    belowThreshold.value as never,
+  )
+  assert.deepEqual(JSON.parse(belowThreshold.result.body), { ok: true, approved: false, score: 88 })
+
+  const duplicateEnroll = response()
+  await fx.routes.get('/dsh-realtime-voice/voiceprint')?.(
+    request({ operation: 'enroll', audio }) as never,
+    duplicateEnroll.value as never,
+  )
+  assert.equal(duplicateEnroll.result.status, 409)
+
+  const remove = response()
+  await fx.routes.get('/dsh-realtime-voice/voiceprint')?.(
+    request({}, 'DELETE') as never,
+    remove.value as never,
+  )
+  assert.equal(remove.result.status, 200)
+  assert.equal(fx.storedPrefs().voiceprintId, '')
+  assert.deepEqual(fx.voiceprintCalls(), { enrolls: 1, verifies: 2, deletes: 1 })
+})
+
+test('voiceprint fails closed when credentials or sufficient audio are missing', async () => {
+  const missing = fixture(false)
+  const missingResponse = response()
+  await missing.routes.get('/dsh-realtime-voice/voiceprint')?.(
+    request({ operation: 'enroll', audio: Buffer.alloc(32_000).toString('base64') }) as never,
+    missingResponse.value as never,
+  )
+  assert.equal(missingResponse.result.status, 502)
+
+  const short = fixture(true)
+  const shortResponse = response()
+  await short.routes.get('/dsh-realtime-voice/voiceprint')?.(
+    request({ operation: 'enroll', audio: Buffer.alloc(4_000).toString('base64') }) as never,
+    shortResponse.value as never,
+  )
+  assert.equal(shortResponse.result.status, 400)
+  assert.deepEqual(short.voiceprintCalls(), { enrolls: 0, verifies: 0, deletes: 0 })
+
+  const invalid = fixture(true)
+  const invalidResponse = response()
+  await invalid.routes.get('/dsh-realtime-voice/voiceprint')?.(
+    request({ operation: 'enroll', audio: '!'.repeat(50_000) }) as never,
+    invalidResponse.value as never,
+  )
+  assert.equal(invalidResponse.result.status, 400)
+
+  const oversized = fixture(true)
+  const oversizedResponse = response()
+  await oversized.routes.get('/dsh-realtime-voice/voiceprint')?.(
+    request({ operation: 'enroll', audio: 'A'.repeat(1_400_001) }) as never,
+    oversizedResponse.value as never,
+  )
+  assert.equal(oversizedResponse.result.status, 413)
+
+  const missingDelete = fixture(false, { voiceprintId: 'vp-local-id' })
+  const missingDeleteResponse = response()
+  await missingDelete.routes.get('/dsh-realtime-voice/voiceprint')?.(
+    request({}, 'DELETE') as never,
+    missingDeleteResponse.value as never,
+  )
+  assert.equal(missingDeleteResponse.result.status, 502)
+  assert.equal(missingDelete.storedPrefs().voiceprintId, 'vp-local-id')
+})
+
 test('cordis install shape: config objects do not masquerade as host dependencies', () => {
   // cordis calls apply(ctx, config); the installed `config: {}` must not be
   // mistaken for the optional test-injection object.
@@ -165,5 +297,8 @@ test('cordis install shape: config objects do not masquerade as host dependencie
   assert.equal(isHostDependencies({
     exchangeOpenAi: async () => '',
     exchangeQwen: async () => '',
+    voiceprintEnroll: async () => '',
+    voiceprintVerify: async () => ({ decision: false, score: 0 }),
+    voiceprintDelete: async () => {},
   } satisfies HostDependencies), true)
 })

@@ -19,7 +19,8 @@ DeepSeek Harness 的轻量实时语音插件。不包含 Docker、Python或本�
 - 候选插话经过文本有效性与播报回声相似度复核；误触发会恢复原播报，确认插话才停止 TTS。插话文字只进入原生输入框，等待用户发送或清空，不会自动抢开第二个 Harness 任务。
 - TTS 播放结束后保留 `400ms` 防回声窗口，清理残留 ASR 缓冲后才重新进入监听。
 - 实时语音轮次要求 Harness 把 1–2 句自然口语结论放在第一段，空行后再写详细结果；插件在第一段每个完整句子生成时立即提交 TTS，不等待详细正文或 `turn/end`。聊天界面不再显示任何 `voice-summary`/HTML 边界，TTS 只消费 `text-delta`，绝不读取 `reasoning-delta`、工具过程或后续详情。
-- 实际等待超过默认 `800ms` 且仍没有正文时，本地接场器最多播放一句不含结论的自然承接；快回答自动取消接场。接场和结果共用同一 TTS 单写者队列，不创建第二个 Agent、不写 Harness 历史；Harness 轨迹出现 LLM retry 时立即作废旧播报。
+- 实际等待超过默认 `800ms` 且仍没有正文时，本地接场器根据任务主题、意图、Harness 工具/重试轨迹和已说话术动态组合自然承接；长等待最多三句且不会重复。快回答自动取消接场。接场和结果共用同一 TTS 单写者队列，不创建第二个 Agent、不写 Harness 历史，也不读取 reasoning 或 tool payload。
+- 千问线路可选腾讯云声纹“抗干扰软门控”。开启后首句至少 1 秒的人声只用于显式录入，后续每个 ASR utterance 在 Host 侧验证；未通过、凭据缺失或服务超时均只把文字留在原生输入框，不自动提交 Harness。声纹不是身份认证，不能授权高风险操作。
 - 同一会话只允许一个语音委派。排队任务使用定向删除，运行中任务才会取消当前 turn，避免误伤原有工作。
 - API Key 只由 Host 的凭据服务按请求读取，不写入浏览器、`localStorage`、包文件或日志。
 
@@ -28,7 +29,7 @@ DeepSeek Harness 的轻量实时语音插件。不包含 Docker、Python或本�
 推荐直接从带版本标签的 GitHub 仓库安装：
 
 ```bash
-dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.9.0
+dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.10.0
 ```
 
 仓库提交预构建 `lib/`，因此这条命令不需要本机 TypeScript、源码 checkout 或 pnpm `allowBuilds`。重启 DeepSeek Harness 后，在“设置 → 插件”展开“实时语音（千问 / GPT）”。
@@ -36,7 +37,7 @@ dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.9.0
 也可以下载同版本 GitHub Release 中的预构建 tarball 后执行：
 
 ```bash
-dsh plugin --profile web add ./dsh-realtime-voice-0.9.0.tgz
+dsh plugin --profile web add ./dsh-realtime-voice-0.10.0.tgz
 ```
 
 也可以从源码自行验收并打包：
@@ -82,8 +83,9 @@ await fetch('/dsh-realtime-voice/status').then(response => response.json())
 
 - 千问：`DASHSCOPE_API_KEY`，并在插件设置里填写同区域的百炼 Workspace ID。
 - OpenAI：`OPENAI_API_KEY`。
+- 可选声纹：`TENCENT_SECRET_ID` 与 `TENCENT_SECRET_KEY`。声纹音频会按用户显式启用发送到腾讯云说话人验证服务；插件只持久化腾讯云返回的不透明 VoicePrintId，不持久化录音或声纹特征。
 
-插件设置只保存 provider、Workspace ID、ASR/TTS 模型、TTS 音色、VAD 参数和播报风格；不保存 Key。千问默认使用北京区、`qwen3-asr-flash-realtime`、`qwen3-tts-flash-realtime` 和 `Chelsie`；OpenAI 默认使用 `gpt-realtime-2.1` 和 `marin`。`Tina` 是 Omni 专属音色，独立 TTS 不支持；`Chelsie` 是专用 TTS 中更接近其软糯亲昵风格的选择。
+插件设置只保存 provider、Workspace ID、ASR/TTS 模型、TTS 音色、VAD 参数、声纹开关/阈值和播报风格；不保存 Key。声纹 ID 只存 Host 设置且不会返回浏览器，原始 PCM 仅在当前 utterance 的内存中短暂存在。千问默认使用北京区、`qwen3-asr-flash-realtime`、`qwen3-tts-flash-realtime` 和 `Chelsie`；OpenAI 默认使用 `gpt-realtime-2.1` 和 `marin`。`Tina` 是 Omni 专属音色，独立 TTS 不支持；`Chelsie` 是专用 TTS 中更接近其软糯亲昵风格的选择。
 
 ## 桌面版 rc.5 的麦克风限制
 
@@ -112,4 +114,5 @@ npm run check
 - HTTP 与 WebSocket 路由仅接受 loopback、同源请求；百炼 Key 只在 Host 到上游的握手请求中出现。
 - Qwen Workspace ID 和区域使用 allowlist 校验，不能注入任意上游域名。
 - 上游错误最多返回截断后的非敏感文本，不返回凭据。
+- 声纹默认关闭，只支持千问的浏览器 PCM 管线；它只能抑制背景语音自动提交，不能抵御录音重放、合成语音或针对性冒充。
 - OpenAI API 的可用地区和账户使用须遵守其服务条款；插件不实现或配置网络规避功能。

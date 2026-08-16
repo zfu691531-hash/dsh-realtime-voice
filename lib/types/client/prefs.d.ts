@@ -13,6 +13,8 @@ export interface VoicePrefs {
     qwenSilenceMs: number;
     qwenMergeMs: number;
     floorDelayMs: number;
+    voiceprintEnabled: boolean;
+    voiceprintThreshold: number;
     openaiModel: string;
     openaiVoice: string;
     instructions: string;

@@ -33,6 +33,12 @@ export declare class QwenPipelineConnection {
     private readonly utteranceBusy;
     private asrRestarting;
     private asrContaminated;
+    private readonly voiceprintCapture;
+    private voiceprintDispatchTail;
+    private voiceprintEpoch;
+    private readonly voiceprintHandledItems;
+    private voiceprintConfigured;
+    private voiceprintEnrolled;
     constructor(prefs: VoicePrefs, callbacks: RealtimeCallbacks);
     connect(): Promise<void>;
     speak(text: string): Promise<void>;
@@ -50,6 +56,8 @@ export declare class QwenPipelineConnection {
     private rejectFalseBargeIn;
     private resetBargeIn;
     private appendAsr;
+    private beginVoiceprintCheck;
+    private dispatchVoiceprintTranscript;
     private restartAsr;
     private sendAsr;
     private sendTts;
