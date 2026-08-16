@@ -1,6 +1,7 @@
 import type { MuxFrame, QueueItem, RpcApi, SessionEvent } from './context-types.ts'
 
 export type DelegatePhase = 'pending' | 'active' | 'done' | 'cancelled'
+export type TextResetReason = 'tool' | 'retry'
 
 interface Operation {
   sessionId: string
@@ -12,7 +13,7 @@ interface Operation {
   lastAssistantText: string
   cancelRequested: boolean
   onTextDelta?: (delta: string) => void
-  onTextReset?: () => void
+  onTextReset?: (reason: TextResetReason) => void
   settle: (result: DelegateResult) => void
   timer: ReturnType<typeof setTimeout>
 }
@@ -25,7 +26,7 @@ export interface DelegateCallbacks {
   /** Final-answer visible text only. Reasoning and tool chunks are excluded. */
   onTextDelta?(delta: string): void
   /** The current streamed text was invalidated by retry or a later tool call. */
-  onTextReset?(): void
+  onTextReset?(reason: TextResetReason): void
   /** Activate the model-visible voice output contract for this turn. */
   voiceOutputContract?: boolean
 }
@@ -33,7 +34,7 @@ export interface DelegateCallbacks {
 export interface SessionTurnCallbacks {
   onTurnStart(turn: string): void
   onTextDelta(turn: string, delta: string): void
-  onTextReset?(turn: string): void
+  onTextReset?(turn: string, reason: TextResetReason): void
   onTurnEnd(turn: string, result: DelegateResult): void
 }
 
@@ -267,18 +268,18 @@ export class HarnessBridge {
         try { operation.onTextDelta?.(chunk.text) } catch { /* speech consumers cannot break the Harness turn */ }
       } else if (isToolChunk(chunk)) {
         operation.lastAssistantText = ''
-        try { operation.onTextReset?.() } catch { /* speech consumers cannot break the Harness turn */ }
+        try { operation.onTextReset?.('tool') } catch { /* speech consumers cannot break the Harness turn */ }
       }
     }
 
     if (event.type === 'tool/call' && turn === operation.turn) {
       operation.lastAssistantText = ''
-      try { operation.onTextReset?.() } catch { /* speech consumers cannot break the Harness turn */ }
+      try { operation.onTextReset?.('tool') } catch { /* speech consumers cannot break the Harness turn */ }
     }
 
     if ((event.type === 'llm/retry' || event.type === 'llm/retry-started') && turn === operation.turn) {
       operation.lastAssistantText = ''
-      try { operation.onTextReset?.() } catch { /* speech consumers cannot break the Harness turn */ }
+      try { operation.onTextReset?.('retry') } catch { /* speech consumers cannot break the Harness turn */ }
     }
 
     if (event.type === 'turn/end' && turn === operation.turn) {
@@ -309,7 +310,7 @@ export class HarnessBridge {
     if (turn === undefined || turn !== observer.activeTurn) return
     if (event.type === 'llm/retry' || event.type === 'llm/retry-started') {
       observer.lastAssistantText = ''
-      observer.callbacks.onTextReset?.(turn)
+      observer.callbacks.onTextReset?.(turn, 'retry')
       return
     }
     if (event.type === 'assistant/chunk') {
@@ -318,13 +319,13 @@ export class HarnessBridge {
         observer.callbacks.onTextDelta(turn, chunk.text)
       } else if (isToolChunk(chunk)) {
         observer.lastAssistantText = ''
-        observer.callbacks.onTextReset?.(turn)
+        observer.callbacks.onTextReset?.(turn, 'tool')
       }
       return
     }
     if (event.type === 'tool/call') {
       observer.lastAssistantText = ''
-      observer.callbacks.onTextReset?.(turn)
+      observer.callbacks.onTextReset?.(turn, 'tool')
       return
     }
     if (event.type === 'assistant/message') {

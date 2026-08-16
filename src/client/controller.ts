@@ -1,4 +1,4 @@
-import { HarnessBridge, type DelegateResult } from './harness-delegate.ts'
+import { HarnessBridge, type DelegateResult, type TextResetReason } from './harness-delegate.ts'
 import { FloorManager } from './floor-manager.ts'
 import { loadPrefs, type VoicePrefs } from './prefs.ts'
 import { RealtimeConnection, type RealtimeCallbacks } from './realtime.ts'
@@ -30,6 +30,7 @@ interface ObservedSpeech {
   speechCancelled: boolean
   speechError?: unknown
   speechGeneration: number
+  visibleTextSeen: boolean
 }
 
 export class VoiceController {
@@ -293,7 +294,7 @@ export class VoiceController {
     this.stopObserving = bridge.observeSession(this.sessionId, {
       onTurnStart: harnessTurn => this.beginObservedTurn(source, harnessTurn),
       onTextDelta: (harnessTurn, delta) => this.pushObservedDelta(harnessTurn, delta),
-      onTextReset: harnessTurn => this.resetObservedSpeech(harnessTurn),
+      onTextReset: (harnessTurn, reason) => this.resetObservedSpeech(harnessTurn, reason),
       onTurnEnd: (harnessTurn, result) => { void this.finishObservedTurn(harnessTurn, result) },
     })
     return bridge.setVoiceMode(this.sessionId, true).then(() => {
@@ -330,6 +331,7 @@ export class VoiceController {
     observed.speechQueue = Promise.resolve()
     observed.speechCancelled = false
     observed.speechGeneration = 0
+    observed.visibleTextSeen = false
     const enqueueSpeech = (sentence: string) => {
       if (source.speak === undefined || observed.speechCancelled) return
       const generation = observed.speechGeneration
@@ -354,20 +356,23 @@ export class VoiceController {
   private pushObservedDelta(harnessTurn: string, delta: string): void {
     const observed = this.observedSpeech
     if (observed?.harnessTurn === harnessTurn) {
+      observed.visibleTextSeen = true
       observed.floor.resultAvailable()
       observed.summary.push(delta)
     }
   }
 
-  private resetObservedSpeech(harnessTurn: string): void {
+  private resetObservedSpeech(harnessTurn: string, reason: TextResetReason): void {
     const observed = this.observedSpeech
     if (observed?.harnessTurn !== harnessTurn) return
-    observed.floor.resultAvailable()
-    observed.speechGeneration++
-    observed.source.cancelSpeech?.()
-    observed.speechQueue = Promise.resolve()
-    observed.speechCancelled = false
-    observed.speechError = undefined
+    if (observed.visibleTextSeen) {
+      observed.speechGeneration++
+      observed.source.cancelSpeech?.()
+      observed.speechQueue = Promise.resolve()
+      observed.speechCancelled = false
+      observed.speechError = undefined
+    }
+    observed.visibleTextSeen = false
     observed.summary = new VoiceSummaryStream(sentence => {
       if (observed.source.speak === undefined || observed.speechCancelled) return
       const generation = observed.speechGeneration
@@ -380,6 +385,7 @@ export class VoiceController {
         observed.speechCancelled = true
       })
     })
+    observed.floor.reset(reason)
     if (this.turns.isCurrent(observed.turnId)) this.setTurnPhase(observed.turnId, 'harness')
   }
 
@@ -437,6 +443,7 @@ export class VoiceController {
     let speechCancelled = false
     let speechQueue = Promise.resolve()
     let speechGeneration = 0
+    let visibleTextSeen = false
     const enqueueSpeech = (sentence: string) => {
       if (source.speak === undefined) return
       if (this.connection === source && this.turns.isCurrent(turnId)) this.setTurnPhase(turnId, 'tts-pending')
@@ -459,15 +466,18 @@ export class VoiceController {
       taskAbort.signal,
       {
         voiceOutputContract: true,
-        onTextDelta: delta => { floor.resultAvailable(); summary.push(delta) },
-        onTextReset: () => {
-          floor.resultAvailable()
-          speechGeneration++
-          source.cancelSpeech?.()
-          speechQueue = Promise.resolve()
-          speechCancelled = false
-          speechError = undefined
+        onTextDelta: delta => { visibleTextSeen = true; floor.resultAvailable(); summary.push(delta) },
+        onTextReset: reason => {
+          if (visibleTextSeen) {
+            speechGeneration++
+            source.cancelSpeech?.()
+            speechQueue = Promise.resolve()
+            speechCancelled = false
+            speechError = undefined
+          }
+          visibleTextSeen = false
           summary = new VoiceSummaryStream(enqueueSpeech)
+          floor.reset(reason)
           if (this.turns.isCurrent(turnId)) this.setTurnPhase(turnId, 'harness')
         },
       },

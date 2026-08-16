@@ -94,7 +94,7 @@ test('LLM retry invalidates streamed speech text before the replacement result',
   const events: string[] = []
   const pending = bridge.delegate('s1', 'voice work', undefined, {
     onTextDelta: delta => events.push(`delta:${delta}`),
-    onTextReset: () => events.push('reset'),
+    onTextReset: reason => events.push(`reset:${reason}`),
   })
   frames.push({ type: 'session/subscribed', sessionId: 's1', lastSeq: 0 })
   await new Promise(resolve => setTimeout(resolve, 0))
@@ -106,7 +106,7 @@ test('LLM retry invalidates streamed speech text before the replacement result',
   frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'assistant/message', data: { turn: 't-retry', message: { content: [{ type: 'text', text: '新结果。' }] } } } })
   frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'turn/end', data: { turn: 't-retry', reason: { kind: 'completed' } } } })
   assert.deepEqual(await pending, { ok: true, text: '新结果。' })
-  assert.deepEqual(events, ['delta:旧结果。', 'reset', 'delta:新结果。'])
+  assert.deepEqual(events, ['delta:旧结果。', 'reset:retry', 'delta:新结果。'])
   bridge.dispose()
 })
 
@@ -115,7 +115,7 @@ test('a later tool call invalidates visible preamble but preserves the final tex
   const events: string[] = []
   const pending = bridge.delegate('s1', '查天气', undefined, {
     onTextDelta: delta => events.push(`delta:${delta}`),
-    onTextReset: () => events.push('reset'),
+    onTextReset: reason => events.push(`reset:${reason}`),
   })
   frames.push({ type: 'session/subscribed', sessionId: 's1', lastSeq: 0 })
   await new Promise(resolve => setTimeout(resolve, 0))
@@ -127,7 +127,7 @@ test('a later tool call invalidates visible preamble but preserves the final tex
   frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'assistant/message', data: { turn: 't-tool', message: { content: [{ type: 'text', text: '明天有雨，记得带伞。' }] } } } })
   frames.push({ type: 'session/event', sessionId: 's1', event: { type: 'turn/end', data: { turn: 't-tool', reason: { kind: 'completed' } } } })
   assert.deepEqual(await pending, { ok: true, text: '明天有雨，记得带伞。' })
-  assert.deepEqual(events, ['delta:我先查一下。', 'reset', 'delta:明天有雨，记得带伞。'])
+  assert.deepEqual(events, ['delta:我先查一下。', 'reset:tool', 'delta:明天有雨，记得带伞。'])
   bridge.dispose()
 })
 
