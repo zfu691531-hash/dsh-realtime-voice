@@ -1,5 +1,6 @@
 import type { MuxFrame, RpcApi } from './context-types.ts';
 export type DelegatePhase = 'pending' | 'active' | 'done' | 'cancelled';
+export type TextResetReason = 'tool' | 'retry';
 export type DelegateResult = {
     ok: true;
     text: string;
@@ -12,14 +13,14 @@ export interface DelegateCallbacks {
     /** Final-answer visible text only. Reasoning and tool chunks are excluded. */
     onTextDelta?(delta: string): void;
     /** The current streamed text was invalidated by retry or a later tool call. */
-    onTextReset?(): void;
+    onTextReset?(reason: TextResetReason): void;
     /** Activate the model-visible voice output contract for this turn. */
     voiceOutputContract?: boolean;
 }
 export interface SessionTurnCallbacks {
     onTurnStart(turn: string): void;
     onTextDelta(turn: string, delta: string): void;
-    onTextReset?(turn: string): void;
+    onTextReset?(turn: string, reason: TextResetReason): void;
     onTurnEnd(turn: string, result: DelegateResult): void;
 }
 export type VoiceContextSetter = (sessionId: string, active: boolean, signal?: AbortSignal) => Promise<void>;

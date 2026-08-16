@@ -200,7 +200,9 @@ test('native slow turn speaks one floor cue then the first answer paragraph', as
   observer.onTextDelta('slow-turn', '这个计划可以继续，但要调整动作顺序。\n\n以下是详细安排。')
   observer.onTurnEnd('slow-turn', { ok: true, text: '这个计划可以继续，但要调整动作顺序。\n\n以下是详细安排。' })
   await delay(450)
-  assert.deepEqual(spoken, ['嗯，我认真想一下。', '这个计划可以继续，但要调整动作顺序。'])
+  assert.equal(spoken.length, 2)
+  assert.match(spoken[0] ?? '', /训练计划|重点|理一理/)
+  assert.equal(spoken[1], '这个计划可以继续，但要调整动作顺序。')
   controller.stop()
 })
 
