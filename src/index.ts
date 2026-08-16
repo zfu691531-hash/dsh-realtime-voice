@@ -102,6 +102,10 @@ const prefsSchema = z.object({
   qwenVadThreshold: z.number().default(0.85),
   qwenSilenceMs: z.number().default(700),
   qwenMergeMs: z.number().default(1200),
+  voiceDraftAutoSend: z.boolean().default(true),
+  voiceDraftDwellMs: z.number().default(1800),
+  voiceDraftAllowWithoutVoiceprint: z.boolean().default(false),
+  voiceDraftSensitiveDeny: z.boolean().default(true),
   floorDelayMs: z.number().default(800),
   floorComposerEnabled: z.boolean().default(true),
   qwenFloorModel: z.string().default('qwen3.5-flash'),
@@ -440,6 +444,7 @@ async function handlePrefs(
 function sanitizePrefs(value: unknown): Record<string, unknown> {
   const source = typeof value === 'object' && value !== null ? value as Record<string, unknown> : {}
   const text = (v: unknown, max: number) => typeof v === 'string' ? v.slice(0, max) : ''
+  const qwenMergeMs = numberInRange(source.qwenMergeMs, 100, 5000, 1200)
   return {
     provider: source.provider === 'openai' ? 'openai' : 'qwen',
     qwenWorkspaceId: text(source.qwenWorkspaceId, 128),
@@ -451,7 +456,11 @@ function sanitizePrefs(value: unknown): Record<string, unknown> {
     qwenTtsVoice: text(source.qwenTtsVoice, 128) || 'Chelsie',
     qwenVadThreshold: numberInRange(source.qwenVadThreshold, -1, 1, 0.85),
     qwenSilenceMs: numberInRange(source.qwenSilenceMs, 200, 6000, 700),
-    qwenMergeMs: numberInRange(source.qwenMergeMs, 100, 5000, 1200),
+    qwenMergeMs,
+    voiceDraftAutoSend: source.voiceDraftAutoSend !== false,
+    voiceDraftDwellMs: Math.max(qwenMergeMs, numberInRange(source.voiceDraftDwellMs, 500, 6000, 1800)),
+    voiceDraftAllowWithoutVoiceprint: source.voiceDraftAllowWithoutVoiceprint === true,
+    voiceDraftSensitiveDeny: source.voiceDraftSensitiveDeny !== false,
     floorDelayMs: numberInRange(source.floorDelayMs, 400, 3000, 800),
     floorComposerEnabled: source.floorComposerEnabled !== false,
     qwenFloorModel: text(source.qwenFloorModel, 128) || 'qwen3.5-flash',

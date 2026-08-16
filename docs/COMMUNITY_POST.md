@@ -20,7 +20,7 @@ v0.11 把接场升级为真正的模型生成：插件在 Harness 开始处理�
 仓库按 DSH bundle 规范提交预构建产物，固定标签后一条命令安装，不需要允许 git 依赖执行构建脚本：
 
 ```bash
-dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.11.0
+dsh plugin --profile web add github:zfu691531-hash/dsh-realtime-voice#v0.12.0
 ```
 
 重启 Harness 后，在“设置 → 插件”配置“实时语音（千问 / GPT）”。千问需要在 Harness 凭据中提供 `DASHSCOPE_API_KEY`，并填写同区域的百炼 Workspace ID。可选声纹还需要 `TENCENT_SECRET_ID` 与 `TENCENT_SECRET_KEY`；启用后首句只用于录入，之后再重复实际指令。

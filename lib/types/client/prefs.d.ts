@@ -12,6 +12,10 @@ export interface VoicePrefs {
     qwenVadThreshold: number;
     qwenSilenceMs: number;
     qwenMergeMs: number;
+    voiceDraftAutoSend: boolean;
+    voiceDraftDwellMs: number;
+    voiceDraftAllowWithoutVoiceprint: boolean;
+    voiceDraftSensitiveDeny: boolean;
     floorDelayMs: number;
     floorComposerEnabled: boolean;
     qwenFloorModel: string;

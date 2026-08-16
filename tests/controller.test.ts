@@ -384,4 +384,248 @@ test('a transcript arriving before TTS starts cannot preempt the pending reply',
   await delay(0)
 })
 
+test('busy ASR draft auto-submits once only after playback and dwell', async () => {
+  installBrowserStubs()
+  updatePrefs({
+    provider: 'qwen',
+    qwenMergeMs: 100,
+    voiceDraftAutoSend: true,
+    voiceDraftDwellMs: 500,
+    voiceDraftAllowWithoutVoiceprint: true,
+    voiceDraftSensitiveDeny: true,
+  })
+  let callbacks!: RealtimeCallbacks
+  let observer!: {
+    onTurnStart(turn: string): void
+    onTextDelta(turn: string, delta: string): void
+    onTurnEnd(turn: string, result: { ok: true; text: string }): void
+  }
+  let draft = ''
+  const submitted: string[] = []
+  const connection: VoiceConnection = {
+    connect: async () => {},
+    disconnect: () => {},
+    speak: async () => {},
+    waitForSpeechIdle: async () => {},
+  }
+  const bridge = {
+    setVoiceMode: async () => {},
+    observeSession: (_sessionId: string, value: typeof observer) => { observer = value; return () => {} },
+  } as unknown as HarnessBridge
+  const controller = new VoiceController('s1', bridge, (_prefs, value) => { callbacks = value; return connection })
+  controller.bindDraft({
+    getDraft: () => draft,
+    setDraft: value => { draft = value },
+    submit: () => { submitted.push(draft); draft = '' },
+  })
+  await controller.toggle()
+  observer.onTurnStart('busy-turn')
+  await callbacks.onTranscript?.('明天能去哪里玩？', { capturedWhileBusy: true })
+  await delay(130)
+  assert.equal(draft, '明天能去哪里玩？')
+  observer.onTextDelta('busy-turn', '夜宵推荐已经整理好了。')
+  observer.onTurnEnd('busy-turn', { ok: true, text: '夜宵推荐已经整理好了。' })
+  await delay(900)
+  assert.deepEqual(submitted, [])
+  await delay(500)
+  assert.deepEqual(submitted, ['明天能去哪里玩？'])
+  controller.stop()
+})
+
+test('new speech during draft dwell merges the whole utterance and restarts the timer', async () => {
+  installBrowserStubs()
+  updatePrefs({ qwenMergeMs: 100, voiceDraftAutoSend: true, voiceDraftDwellMs: 500, voiceDraftAllowWithoutVoiceprint: true })
+  let callbacks!: RealtimeCallbacks
+  let observer!: {
+    onTurnStart(turn: string): void
+    onTextDelta(turn: string, delta: string): void
+    onTurnEnd(turn: string, result: { ok: true; text: string }): void
+  }
+  let draft = ''
+  const submitted: string[] = []
+  const connection: VoiceConnection = { connect: async () => {}, disconnect: () => {}, speak: async () => {}, waitForSpeechIdle: async () => {} }
+  const bridge = {
+    setVoiceMode: async () => {},
+    observeSession: (_sessionId: string, value: typeof observer) => { observer = value; return () => {} },
+  } as unknown as HarnessBridge
+  const controller = new VoiceController('s1', bridge, (_prefs, value) => { callbacks = value; return connection })
+  controller.bindDraft({ getDraft: () => draft, setDraft: value => { draft = value }, submit: () => { submitted.push(draft); draft = '' } })
+  await controller.toggle()
+  observer.onTurnStart('busy-turn')
+  await callbacks.onTranscript?.('明天能去哪里玩？', { capturedWhileBusy: true })
+  await delay(130)
+  observer.onTextDelta('busy-turn', '第一轮完成。')
+  observer.onTurnEnd('busy-turn', { ok: true, text: '第一轮完成。' })
+  await delay(650)
+  callbacks.onSpeechStart?.()
+  await delay(250)
+  assert.deepEqual(submitted, [])
+  callbacks.onSpeechEnd?.()
+  await callbacks.onTranscript?.('可以了，今晚就这样。')
+  await delay(130)
+  assert.equal(draft, '明天能去哪里玩？\n可以了，今晚就这样。')
+  await delay(700)
+  assert.deepEqual(submitted, [])
+  await delay(300)
+  assert.deepEqual(submitted, ['明天能去哪里玩？\n可以了，今晚就这样。'])
+  controller.stop()
+})
+
+test('a user draft revision revokes the ASR lease even when text ends unchanged', async () => {
+  installBrowserStubs()
+  updatePrefs({ qwenMergeMs: 100, voiceDraftAutoSend: true, voiceDraftDwellMs: 500, voiceDraftAllowWithoutVoiceprint: true })
+  let callbacks!: RealtimeCallbacks
+  let observer!: {
+    onTurnStart(turn: string): void
+    onTextDelta(turn: string, delta: string): void
+    onTurnEnd(turn: string, result: { ok: true; text: string }): void
+  }
+  let draft = ''
+  let draftRev = 0
+  let submits = 0
+  const connection: VoiceConnection = { connect: async () => {}, disconnect: () => {}, speak: async () => {}, waitForSpeechIdle: async () => {} }
+  const bridge = {
+    setVoiceMode: async () => {},
+    observeSession: (_sessionId: string, value: typeof observer) => { observer = value; return () => {} },
+  } as unknown as HarnessBridge
+  const controller = new VoiceController('s1', bridge, (_prefs, value) => { callbacks = value; return connection })
+  const bind = () => controller.bindDraft({
+    getDraft: () => draft,
+    getDraftRev: () => draftRev,
+    getPhase: () => 'plain',
+    setDraft: value => { draft = value; draftRev++ },
+    submit: () => { submits++; draft = ''; draftRev++ },
+  })
+  bind()
+  await controller.toggle()
+  observer.onTurnStart('busy-turn')
+  await callbacks.onTranscript?.('原始语音', { capturedWhileBusy: true })
+  await delay(130)
+  bind()
+  observer.onTextDelta('busy-turn', '完成。')
+  observer.onTurnEnd('busy-turn', { ok: true, text: '完成。' })
+  await delay(500)
+  // Simulate typing and undoing back to byte-identical text. draftRev still
+  // proves that the user touched the composer, so auto-send must be revoked.
+  draftRev++
+  bind()
+  await delay(650)
+  assert.equal(submits, 0)
+  assert.equal(draft, '原始语音')
+  controller.stop()
+})
+
+test('voiceprint failures and sensitive drafts stay manual', async () => {
+  installBrowserStubs()
+  updatePrefs({
+    qwenMergeMs: 100,
+    voiceDraftAutoSend: true,
+    voiceDraftDwellMs: 500,
+    voiceDraftAllowWithoutVoiceprint: true,
+    voiceDraftSensitiveDeny: true,
+  })
+  let callbacks!: RealtimeCallbacks
+  let observer!: {
+    onTurnStart(turn: string): void
+    onTextDelta(turn: string, delta: string): void
+    onTurnEnd(turn: string, result: { ok: true; text: string }): void
+  }
+  let draft = ''
+  let submits = 0
+  const connection: VoiceConnection = { connect: async () => {}, disconnect: () => {}, speak: async () => {}, waitForSpeechIdle: async () => {} }
+  const bridge = {
+    setVoiceMode: async () => {},
+    observeSession: (_sessionId: string, value: typeof observer) => { observer = value; return () => {} },
+  } as unknown as HarnessBridge
+  const controller = new VoiceController('s1', bridge, (_prefs, value) => { callbacks = value; return connection })
+  controller.bindDraft({ getDraft: () => draft, setDraft: value => { draft = value }, submit: () => { submits++; draft = '' } })
+  await controller.toggle()
+  observer.onTurnStart('busy-turn')
+  await callbacks.onTranscript?.('旁边的人说的内容', { capturedWhileBusy: true, voiceprint: 'rejected' })
+  await delay(130)
+  observer.onTextDelta('busy-turn', '完成。')
+  observer.onTurnEnd('busy-turn', { ok: true, text: '完成。' })
+  await delay(1100)
+  assert.equal(submits, 0)
+  draft = ''
+  controller.bindDraft({ getDraft: () => draft, setDraft: value => { draft = value }, submit: () => { submits++; draft = '' } })
+  observer.onTurnStart('busy-turn-2')
+  await callbacks.onTranscript?.('帮我付款一百元', { capturedWhileBusy: true })
+  await delay(130)
+  observer.onTextDelta('busy-turn-2', '完成。')
+  observer.onTurnEnd('busy-turn-2', { ok: true, text: '完成。' })
+  await delay(1100)
+  assert.equal(submits, 0)
+  assert.equal(draft, '帮我付款一百元')
+  controller.stop()
+})
+
+test('speech activity cancels commit, never cuts a long phrase, and filler safely resumes after speech end', async () => {
+  installBrowserStubs()
+  updatePrefs({ qwenMergeMs: 100, voiceDraftAutoSend: true, voiceDraftDwellMs: 500, voiceDraftAllowWithoutVoiceprint: true })
+  let callbacks!: RealtimeCallbacks
+  let observer!: {
+    onTurnStart(turn: string): void
+    onTextDelta(turn: string, delta: string): void
+    onTurnEnd(turn: string, result: { ok: true; text: string }): void
+  }
+  let draft = ''
+  let submits = 0
+  const connection: VoiceConnection = { connect: async () => {}, disconnect: () => {}, speak: async () => {}, waitForSpeechIdle: async () => {} }
+  const bridge = {
+    setVoiceMode: async () => {},
+    observeSession: (_sessionId: string, value: typeof observer) => { observer = value; return () => {} },
+  } as unknown as HarnessBridge
+  const controller = new VoiceController('s1', bridge, (_prefs, value) => { callbacks = value; return connection })
+  controller.bindDraft({ getDraft: () => draft, setDraft: value => { draft = value }, submit: () => { submits++; draft = '' } })
+  await controller.toggle()
+  observer.onTurnStart('busy-turn')
+  await callbacks.onTranscript?.('保留这一句', { capturedWhileBusy: true })
+  await delay(130)
+  observer.onTextDelta('busy-turn', '完成。')
+  observer.onTurnEnd('busy-turn', { ok: true, text: '完成。' })
+  await delay(950)
+  assert.match(controller.getSnapshot().detail, /即将发送/)
+  callbacks.onSpeechStart?.()
+  assert.match(controller.getSnapshot().detail, /等待本句识别/)
+  await delay(2000)
+  assert.equal(submits, 0)
+  // Only speech_stopped may resume. No actionable final follows (for example
+  // a cough), so the old lease resumes without cutting a long phrase.
+  callbacks.onSpeechEnd?.()
+  await delay(1600)
+  assert.equal(submits, 1)
+  controller.stop()
+})
+
+test('draft auto-send defaults fail closed without voiceprint opt-in', async () => {
+  installBrowserStubs()
+  updatePrefs({ qwenMergeMs: 100, voiceDraftAutoSend: true, voiceDraftDwellMs: 500, voiceDraftAllowWithoutVoiceprint: false, voiceprintEnabled: false })
+  let callbacks!: RealtimeCallbacks
+  let observer!: {
+    onTurnStart(turn: string): void
+    onTextDelta(turn: string, delta: string): void
+    onTurnEnd(turn: string, result: { ok: true; text: string }): void
+  }
+  let draft = ''
+  let submits = 0
+  const connection: VoiceConnection = { connect: async () => {}, disconnect: () => {}, speak: async () => {}, waitForSpeechIdle: async () => {} }
+  const bridge = {
+    setVoiceMode: async () => {},
+    observeSession: (_sessionId: string, value: typeof observer) => { observer = value; return () => {} },
+  } as unknown as HarnessBridge
+  const controller = new VoiceController('s1', bridge, (_prefs, value) => { callbacks = value; return connection })
+  controller.bindDraft({ getDraft: () => draft, setDraft: value => { draft = value }, submit: () => { submits++; draft = '' } })
+  await controller.toggle()
+  observer.onTurnStart('busy-turn')
+  await callbacks.onTranscript?.('无声纹的后续语音', { capturedWhileBusy: true })
+  await delay(130)
+  observer.onTextDelta('busy-turn', '完成。')
+  observer.onTurnEnd('busy-turn', { ok: true, text: '完成。' })
+  await delay(1500)
+  assert.equal(submits, 0)
+  assert.equal(draft, '无声纹的后续语音')
+  controller.stop()
+})
+
 function delay(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, ms)) }

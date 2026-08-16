@@ -1,12 +1,15 @@
 import type { VoicePrefs } from './prefs.ts';
 import { type ToolCall } from './protocol.ts';
+export interface TranscriptMeta {
+    capturedWhileBusy?: boolean;
+    voiceprint?: 'approved' | 'rejected' | 'unavailable';
+}
 export interface RealtimeCallbacks {
     onState(state: 'connecting' | 'listening' | 'speaking' | 'error', detail?: string): void;
     onToolCall(call: ToolCall): Promise<unknown>;
-    onTranscript?(text: string, meta?: {
-        capturedWhileBusy?: boolean;
-        voiceprint?: 'approved' | 'rejected' | 'unavailable';
-    }): Promise<void>;
+    onSpeechStart?(): void;
+    onSpeechEnd?(): void;
+    onTranscript?(text: string, meta?: TranscriptMeta): Promise<void>;
 }
 export declare class RealtimeConnection {
     private readonly prefs;

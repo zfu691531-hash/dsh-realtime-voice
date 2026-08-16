@@ -119,6 +119,26 @@ test('host routes dispose cleanly and can be mounted again', () => {
   assert.equal(two.upgrades.size, 2)
 })
 
+test('draft auto-send preferences persist with safe bounds', async () => {
+  const fx = fixture(false)
+  const saved = response()
+  await fx.routes.get('/dsh-realtime-voice/prefs')?.(
+    request({
+      qwenMergeMs: 1400,
+      voiceDraftAutoSend: true,
+      voiceDraftDwellMs: 600,
+      voiceDraftAllowWithoutVoiceprint: true,
+      voiceDraftSensitiveDeny: true,
+    }, 'PUT') as never,
+    saved.value as never,
+  )
+  assert.equal(saved.result.status, 200)
+  assert.equal(fx.storedPrefs().voiceDraftAutoSend, true)
+  assert.equal(fx.storedPrefs().voiceDraftDwellMs, 1400)
+  assert.equal(fx.storedPrefs().voiceDraftAllowWithoutVoiceprint, true)
+  assert.equal(fx.storedPrefs().voiceDraftSensitiveDeny, true)
+})
+
 test('dynamic floor route cleans input and returns only validated model speech', async () => {
   const fx = fixture(true, { floorComposerEnabled: true, qwenWorkspaceId: 'workspace-test', qwenFloorModel: 'qwen3.5-flash' })
   const res = response()

@@ -2,7 +2,7 @@ import { HarnessBridge, type DelegateResult, type TextResetReason } from './harn
 import { FloorManager } from './floor-manager.ts'
 import { resolveDynamicFloorCue } from './floor-composer.ts'
 import { loadPrefs, type VoicePrefs } from './prefs.ts'
-import { RealtimeConnection, type RealtimeCallbacks } from './realtime.ts'
+import { RealtimeConnection, type RealtimeCallbacks, type TranscriptMeta } from './realtime.ts'
 import type { ToolCall } from './protocol.ts'
 import { QwenPipelineConnection } from './qwen-pipeline.ts'
 import { TurnCoordinator, type TurnPhase } from './turn-coordinator.ts'
@@ -19,7 +19,13 @@ export interface VoiceConnection {
   setInputPhase?(phase: TurnPhase): void
 }
 export type VoiceConnectionFactory = (prefs: VoicePrefs, callbacks: RealtimeCallbacks) => VoiceConnection
-export interface VoiceDraftTarget { getDraft(): string; setDraft(text: string): void; submit?(): void }
+export interface VoiceDraftTarget {
+  getDraft(): string
+  getDraftRev?(): number
+  getPhase?(): 'plain' | 'adjudicating' | 'claimed' | 'submitting'
+  setDraft(text: string): void
+  submit?(): void
+}
 
 interface ObservedSpeech {
   harnessTurn: string
@@ -34,6 +40,13 @@ interface ObservedSpeech {
   visibleTextSeen: boolean
 }
 
+interface DraftAutoSendLease {
+  source: VoiceConnection
+  expectedDraft: string
+  expectedDraftRev?: number
+  generation: number
+}
+
 export class VoiceController {
   private connection?: VoiceConnection
   private snapshot: VoiceSnapshot = { state: 'idle', detail: '', provider: loadPrefs().provider }
@@ -44,9 +57,19 @@ export class VoiceController {
   private transcriptSource?: VoiceConnection
   private transcriptSegments: string[] = []
   private transcriptWasBusy = false
+  private transcriptCapturedWhileBusy = false
+  private transcriptVoiceprint: TranscriptMeta['voiceprint']
   private draftTarget?: VoiceDraftTarget
   private boundDraft = ''
+  private boundDraftRev?: number
+  private pluginDraftWritePending = false
   private deferredDraft = ''
+  private draftAutoSendLease?: DraftAutoSendLease
+  private draftAutoSendTimer?: ReturnType<typeof setTimeout>
+  private draftCommitTimer?: ReturnType<typeof setTimeout>
+  private draftSpeechResumeTimer?: ReturnType<typeof setTimeout>
+  private draftSpeechActive = false
+  private draftAutoSendGeneration = 0
   private readonly turns = new TurnCoordinator()
   private composerOnly = false
   private stopObserving?: () => void
@@ -72,8 +95,25 @@ export class VoiceController {
   getSnapshot = (): VoiceSnapshot => this.snapshot
 
   bindDraft(target: VoiceDraftTarget): () => void {
+    const current = target.getDraft()
+    const currentRev = target.getDraftRev?.()
+    // React rebinds this adapter after every composer render. A value equal to
+    // boundDraft is our own expected write; a mismatch is a real user edit,
+    // paste or clear and revokes the ASR-owned auto-send lease.
+    if (current !== this.boundDraft) {
+      this.disarmDraftAutoSend('输入框已由你修改；自动发送已取消')
+      this.boundDraft = current
+      this.boundDraftRev = currentRev
+      this.pluginDraftWritePending = false
+    } else if (currentRev !== undefined && this.boundDraftRev !== undefined && currentRev !== this.boundDraftRev) {
+      if (!this.pluginDraftWritePending) this.disarmDraftAutoSend('输入框已由你修改；自动发送已取消')
+      this.boundDraftRev = currentRev
+      this.pluginDraftWritePending = false
+      if (this.draftAutoSendLease !== undefined) this.draftAutoSendLease.expectedDraftRev = currentRev
+    } else if (this.boundDraftRev === undefined) {
+      this.boundDraftRev = currentRev
+    }
     this.draftTarget = target
-    this.boundDraft = target.getDraft()
     if (this.deferredDraft !== '') {
       this.appendToDraft(this.deferredDraft)
       this.deferredDraft = ''
@@ -101,7 +141,9 @@ export class VoiceController {
         if (this.taskAbort === undefined) this.setState(state, detail ?? '')
       },
       onToolCall: call => this.handleToolCall(connection, call),
-      onTranscript: (text, meta) => this.turns.enqueue(() => this.bufferTranscript(connection, text, meta?.capturedWhileBusy === true)),
+      onSpeechStart: () => this.handleSpeechStart(connection),
+      onSpeechEnd: () => this.handleSpeechEnd(connection),
+      onTranscript: (text, meta) => this.turns.enqueue(() => this.bufferTranscript(connection, text, meta)),
     })
     this.connection = connection
     try {
@@ -122,6 +164,7 @@ export class VoiceController {
   stop(): void {
     this.connectionEpoch++
     this.turns.invalidate()
+    this.disarmDraftAutoSend()
     this.flushBufferedTranscriptToDraft()
     this.taskAbort?.abort()
     this.taskAbort = undefined
@@ -136,27 +179,33 @@ export class VoiceController {
 
   dispose(): void { this.stop(); this.listeners.clear() }
 
-  private async bufferTranscript(source: VoiceConnection, transcript: string, capturedWhileBusy = false): Promise<void> {
+  private async bufferTranscript(source: VoiceConnection, transcript: string, meta: TranscriptMeta = {}): Promise<void> {
     if (this.connection !== source) return
     const segment = transcript.trim()
     if (segment === '') return
     if (this.transcriptSource !== undefined && this.transcriptSource !== source) this.flushBufferedTranscriptToDraft()
     this.transcriptSource = source
     this.transcriptSegments.push(segment)
+    const capturedWhileBusy = meta.capturedWhileBusy === true
     const wasBusy = capturedWhileBusy
       || this.hasPendingDraft()
       || this.nativeSubmitPending
       || this.taskAbort !== undefined
       || (this.turns.phase !== 'listening' && this.turns.phase !== 'endpoint-candidate')
     this.transcriptWasBusy ||= wasBusy
+    this.transcriptCapturedWhileBusy ||= capturedWhileBusy
+    if (meta.voiceprint === 'rejected' || meta.voiceprint === 'unavailable') this.transcriptVoiceprint = meta.voiceprint
+    else if (meta.voiceprint === 'approved' && this.transcriptVoiceprint === undefined) this.transcriptVoiceprint = 'approved'
     if (!wasBusy && this.turns.phase === 'listening') this.setTurnPhase(this.turns.turnId, 'endpoint-candidate')
     if (this.transcriptTimer !== undefined) clearTimeout(this.transcriptTimer)
     this.transcriptTimer = setTimeout(() => {
       this.transcriptTimer = undefined
       const wasBusy = this.transcriptWasBusy
+      const capturedWhileBusy = this.transcriptCapturedWhileBusy
+      const voiceprint = this.transcriptVoiceprint
       const combined = this.takeBufferedTranscript()
       if (combined !== '') void this.turns.enqueue(() => this.composerOnly
-        ? wasBusy ? this.stageComposerTranscript(source, combined) : this.submitComposerTranscript(source, combined)
+        ? wasBusy ? this.stageComposerTranscript(source, combined, { capturedWhileBusy, voiceprint }) : this.submitComposerTranscript(source, combined)
         : wasBusy ? this.handleBusyTranscript(source, combined) : this.handleTranscript(source, combined))
     }, loadPrefs().qwenMergeMs)
   }
@@ -164,6 +213,7 @@ export class VoiceController {
   private async handleToolCall(source: VoiceConnection, call: ToolCall): Promise<unknown> {
     if (this.connection !== source) return { ok: false, error: '语音连接已关闭' }
     if (call.name === 'cancel_harness_task') {
+      this.disarmDraftAutoSend()
       this.taskAbort?.abort()
       const cancelled = await this.bridge.cancel(this.sessionId)
       if (this.connection === source) {
@@ -197,6 +247,7 @@ export class VoiceController {
     // has completed.
     if (this.taskAbort !== undefined) {
       if (isExplicitCancel(task)) {
+        this.disarmDraftAutoSend()
         const active = this.taskAbort
         active.abort()
         const cancelled = await this.bridge.cancel(this.sessionId)
@@ -236,6 +287,7 @@ export class VoiceController {
     const task = transcript.trim()
     if (task === '') return
     if (this.taskAbort !== undefined && isExplicitCancel(task)) {
+      this.disarmDraftAutoSend()
       await this.handleTranscript(source, task)
       return
     }
@@ -244,11 +296,12 @@ export class VoiceController {
     this.setState(playback ? 'speaking' : this.taskAbort !== undefined ? 'working' : 'listening', '继续任务：新语音已保留在输入框；发送后处理，或直接清空')
   }
 
-  private stageComposerTranscript(source: VoiceConnection, transcript: string): void {
+  private stageComposerTranscript(source: VoiceConnection, transcript: string, meta: TranscriptMeta = {}): void {
     if (this.connection !== source) return
     this.appendToDraft(transcript)
+    this.armDraftAutoSend(source, meta)
     if (this.turns.phase === 'endpoint-candidate') this.setTurnPhase(this.turns.turnId, 'listening')
-    if (this.turns.phase === 'listening') this.setState('listening', '语音已写入输入框；继续说会合并，发送后由 Harness 处理')
+    if (this.turns.phase === 'listening') this.updateDraftAutoSendStatus()
   }
 
   private submitComposerTranscript(source: VoiceConnection, transcript: string): void {
@@ -259,7 +312,16 @@ export class VoiceController {
       return
     }
     this.appendToDraft(transcript)
-    this.nativeSubmittedTask = transcript.trim()
+    this.submitBoundDraft(source)
+  }
+
+  private submitBoundDraft(source: VoiceConnection): void {
+    if (this.connection !== source) return
+    const target = this.draftTarget
+    const submittedTask = this.boundDraft.trim()
+    if (target?.submit === undefined || submittedTask === '') return
+    this.disarmDraftAutoSend()
+    this.nativeSubmittedTask = submittedTask
     this.nativeSubmitPending = true
     this.setState('working', '语音已识别，正在交给 Harness')
     queueMicrotask(() => {
@@ -270,6 +332,8 @@ export class VoiceController {
         // rebind this target until the next render. Drop our shadow copy now so
         // speech captured during that gap cannot resurrect the submitted turn.
         this.boundDraft = ''
+        this.boundDraftRev = undefined
+        this.pluginDraftWritePending = false
       } catch (error) {
         this.nativeSubmittedTask = ''
         this.clearNativeSubmitPending()
@@ -305,6 +369,8 @@ export class VoiceController {
   }
 
   private disableNativeComposer(): void {
+    this.disarmDraftAutoSend()
+    this.draftSpeechActive = false
     this.stopObserving?.()
     this.stopObserving = undefined
     if (this.voiceContextTimer !== undefined) clearInterval(this.voiceContextTimer)
@@ -318,6 +384,7 @@ export class VoiceController {
 
   private beginObservedTurn(source: VoiceConnection, harnessTurn: string): void {
     if (this.connection !== source || !this.composerOnly) return
+    this.disarmDraftAutoSend()
     this.cancelObservedSpeech()
     const submittedTask = this.nativeSubmittedTask
     this.nativeSubmittedTask = ''
@@ -404,6 +471,7 @@ export class VoiceController {
       return
     }
     if (!result.ok) {
+      this.disarmDraftAutoSend()
       observed.speechGeneration++
       observed.source.cancelSpeech?.()
       this.setTurnPhase(turnId, 'listening')
@@ -430,11 +498,13 @@ export class VoiceController {
       this.setState('listening', isBargeInError(observed.speechError)
         ? '播报已打断；识别文字保留在输入框'
         : this.hasPendingDraft()
-          ? 'Harness 已完成；输入框里的后续语音可发送或清空'
+          ? 'Harness 已完成；输入框里的后续语音正在等待发送'
           : 'Harness 已完成；继续说将自动处理')
+      this.scheduleDraftAutoSend()
       release()
     } catch (error) {
       if (this.connection === source && this.turns.isCurrent(turnId)) {
+        this.disarmDraftAutoSend()
         this.setTurnPhase(turnId, 'listening')
         this.setState('error', error instanceof Error ? error.message : String(error))
       }
@@ -493,6 +563,7 @@ export class VoiceController {
     if (this.taskAbort === taskAbort) this.taskAbort = undefined
     if (this.connection !== source || !this.turns.isCurrent(turnId)) return
     if (!result.ok) {
+      this.disarmDraftAutoSend()
       speechGeneration++
       source.cancelSpeech?.()
       this.setTurnPhase(turnId, 'listening')
@@ -500,6 +571,7 @@ export class VoiceController {
       return
     }
     if (source.speak === undefined) {
+      this.disarmDraftAutoSend()
       this.setTurnPhase(turnId, 'listening')
       this.setState('error', '当前语音连接没有独立 TTS')
       return
@@ -517,9 +589,11 @@ export class VoiceController {
         this.setState('listening', isBargeInError(speechError)
           ? '播报已打断；新语音已保留在输入框，可发送或清空'
           : 'Harness 已完成')
+        this.scheduleDraftAutoSend()
       }
     } catch (error) {
       if (this.connection === source && this.turns.isCurrent(turnId)) {
+        this.disarmDraftAutoSend()
         this.setTurnPhase(turnId, 'listening')
         this.setState('error', error instanceof Error ? error.message : String(error))
       }
@@ -557,6 +631,8 @@ export class VoiceController {
     const combined = this.transcriptSegments.splice(0).join('\n').trim()
     this.transcriptSource = undefined
     this.transcriptWasBusy = false
+    this.transcriptCapturedWhileBusy = false
+    this.transcriptVoiceprint = undefined
     return combined
   }
 
@@ -567,17 +643,19 @@ export class VoiceController {
     if (combined !== '') this.appendToDraft(combined)
   }
 
-  private appendToDraft(text: string): void {
+  private appendToDraft(text: string): string {
     const addition = text.trim()
-    if (addition === '') return
+    if (addition === '') return this.boundDraft
     const target = this.draftTarget
     if (target === undefined) {
       this.deferredDraft = joinDraft(this.deferredDraft, addition)
-      return
+      return this.deferredDraft
     }
     const next = joinDraft(this.boundDraft || target.getDraft(), addition)
     this.boundDraft = next
+    this.pluginDraftWritePending = true
     target.setDraft(next)
+    return next
   }
 
   private hasPendingDraft(): boolean {
@@ -592,6 +670,141 @@ export class VoiceController {
     if (this.nativeSubmitTimer !== undefined) clearTimeout(this.nativeSubmitTimer)
     this.nativeSubmitTimer = undefined
   }
+
+  private armDraftAutoSend(source: VoiceConnection, meta: TranscriptMeta): void {
+    const prefs = loadPrefs()
+    const voiceprintBlocked = meta.voiceprint === 'rejected' || meta.voiceprint === 'unavailable'
+    const voiceprintAllowed = prefs.voiceprintEnabled
+      ? meta.voiceprint === 'approved'
+      : prefs.voiceDraftAllowWithoutVoiceprint
+    const continuation = this.draftAutoSendLease?.source === source
+    const task = this.boundDraft.trim()
+    if (!prefs.voiceDraftAutoSend
+      || voiceprintBlocked
+      || !voiceprintAllowed
+      || (!meta.capturedWhileBusy && !continuation)
+      || (prefs.voiceDraftSensitiveDeny && isSensitiveDraft(task))
+      || isExplicitCancel(task)) {
+      this.disarmDraftAutoSend()
+      return
+    }
+    this.pauseDraftAutoSend()
+    this.draftAutoSendLease = {
+      source,
+      expectedDraft: this.boundDraft,
+      expectedDraftRev: this.pluginDraftWritePending ? undefined : this.boundDraftRev,
+      generation: ++this.draftAutoSendGeneration,
+    }
+    this.scheduleDraftAutoSend()
+  }
+
+  private scheduleDraftAutoSend(): void {
+    this.pauseDraftAutoSend()
+    const lease = this.draftAutoSendLease
+    if (lease === undefined || !this.isDraftAutoSendSafe(lease)) return
+    const dwellMs = loadPrefs().voiceDraftDwellMs
+    const generation = lease.generation
+    this.draftAutoSendTimer = setTimeout(() => {
+      this.draftAutoSendTimer = undefined
+      const current = this.validDraftAutoSendLease(generation)
+      if (current === undefined) {
+        this.disarmDraftAutoSend('输入框或发送状态已变化；自动发送已取消')
+        return
+      }
+      // Server VAD speech_started can trail the actual acoustic onset. Keep a
+      // short final guard window so a user beginning the next phrase at the
+      // dwell boundary still cancels before submit.
+      this.setState('listening', '后续语音即将发送；继续说仍会合并')
+      this.draftCommitTimer = setTimeout(() => {
+        this.draftCommitTimer = undefined
+        const ready = this.validDraftAutoSendLease(generation)
+        if (ready === undefined) {
+          this.disarmDraftAutoSend('输入框或发送状态已变化；自动发送已取消')
+          return
+        }
+        this.submitBoundDraft(ready.source)
+      }, 450)
+    }, dwellMs)
+    this.updateDraftAutoSendStatus()
+  }
+
+  private isDraftAutoSendSafe(lease: DraftAutoSendLease): boolean {
+    return this.connection === lease.source
+      && this.composerOnly
+      && this.turns.phase === 'listening'
+      && this.taskAbort === undefined
+      && !this.nativeSubmitPending
+      && !this.draftSpeechActive
+      && (this.draftTarget?.getPhase?.() ?? 'plain') === 'plain'
+      && this.draftTarget?.submit !== undefined
+      && lease.expectedDraft.trim() !== ''
+  }
+
+  private pauseDraftAutoSend(): void {
+    if (this.draftAutoSendTimer !== undefined) clearTimeout(this.draftAutoSendTimer)
+    this.draftAutoSendTimer = undefined
+    if (this.draftCommitTimer !== undefined) clearTimeout(this.draftCommitTimer)
+    this.draftCommitTimer = undefined
+    if (this.draftSpeechResumeTimer !== undefined) clearTimeout(this.draftSpeechResumeTimer)
+    this.draftSpeechResumeTimer = undefined
+  }
+
+  private handleSpeechStart(source: VoiceConnection): void {
+    if (this.connection !== source) return
+    this.draftSpeechActive = true
+    const lease = this.draftAutoSendLease
+    this.pauseDraftAutoSend()
+    if (lease === undefined) return
+    this.setState('listening', '检测到你在继续说；等待本句识别后合并')
+  }
+
+  private handleSpeechEnd(source: VoiceConnection): void {
+    if (this.connection !== source) return
+    this.draftSpeechActive = false
+    const lease = this.draftAutoSendLease
+    if (lease === undefined || !this.isDraftAutoSendSafe(lease)) return
+    const resumeMs = Math.max(500, loadPrefs().qwenMergeMs)
+    const generation = lease.generation
+    // Actionable finals normally arrive after speech_stopped and replace this
+    // timer with a fresh merged lease. If the sound was only a cough/filler,
+    // resume after the no-final grace without guessing how long speech lasts.
+    this.draftSpeechResumeTimer = setTimeout(() => {
+      this.draftSpeechResumeTimer = undefined
+      if (this.validDraftAutoSendLease(generation) !== undefined) this.scheduleDraftAutoSend()
+    }, resumeMs)
+  }
+
+  private validDraftAutoSendLease(generation: number): DraftAutoSendLease | undefined {
+    const current = this.draftAutoSendLease
+    const target = this.draftTarget
+    if (current === undefined
+      || current.generation !== generation
+      || !this.isDraftAutoSendSafe(current)
+      || target?.getDraft() !== current.expectedDraft
+      || (current.expectedDraftRev !== undefined && target.getDraftRev?.() !== current.expectedDraftRev)
+      || this.boundDraft !== current.expectedDraft) return undefined
+    return current
+  }
+
+  private disarmDraftAutoSend(detail?: string): void {
+    const hadLease = this.draftAutoSendLease !== undefined
+    this.pauseDraftAutoSend()
+    this.draftAutoSendLease = undefined
+    this.draftAutoSendGeneration++
+    if (detail !== undefined && hadLease && this.connection !== undefined && this.turns.phase === 'listening') {
+      this.setState('listening', detail)
+    }
+  }
+
+  private updateDraftAutoSendStatus(): void {
+    const lease = this.draftAutoSendLease
+    if (lease !== undefined && this.isDraftAutoSendSafe(lease)) {
+      const seconds = Math.round(loadPrefs().voiceDraftDwellMs / 100) / 10
+      this.setState('listening', `后续语音已合并；继续说会重新计时，约 ${seconds} 秒后自动发送`)
+      return
+    }
+    this.setState('listening', '语音已写入输入框；可继续说、手动发送或清空')
+  }
 }
 
 function isExplicitCancel(text: string): boolean {
@@ -601,6 +814,10 @@ function isExplicitCancel(text: string): boolean {
 
 function isBargeInError(error: unknown): boolean {
   return error instanceof Error && error.message === '语音播放已被用户打断'
+}
+
+function isSensitiveDraft(text: string): boolean {
+  return /(转账|汇款|付款|支付|购买|下单|发送验证码|验证码|密码|删除|清空|卸载|格式化|关机|重启|抹掉|永久)/.test(text)
 }
 
 function joinDraft(existing: string, addition: string): string {
