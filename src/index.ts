@@ -12,6 +12,7 @@ import {
 } from './host/signaling.ts'
 import { QwenSpeechProxy } from './host/qwen-speech-proxy.ts'
 import { TencentVoiceprintClient, validVoiceprintAudio, validVoiceprintId } from './host/tencent-voiceprint.ts'
+import { cleanFloorTopic, composeFloorText, validateFloorCue, type FloorProvider, type FloorStage } from './host/floor-composer.ts'
 import { VOICE_OUTPUT_CONTEXT } from './voice-contract.ts'
 
 export const name = 'dsh-realtime-voice'
@@ -74,6 +75,7 @@ export interface HostDependencies {
   voiceprintEnroll(audio: string, secretId: string, secretKey: string, signal: AbortSignal): Promise<string>
   voiceprintVerify(audio: string, voiceprintId: string, secretId: string, secretKey: string, signal: AbortSignal): Promise<{ decision: boolean; score: number }>
   voiceprintDelete(voiceprintId: string, secretId: string, secretKey: string, signal: AbortSignal): Promise<void>
+  composeFloor(input: Parameters<typeof composeFloorText>[0], key: string, signal: AbortSignal): Promise<string>
 }
 
 const voiceprintClient = new TencentVoiceprintClient()
@@ -83,6 +85,7 @@ const productionDependencies: HostDependencies = {
   voiceprintEnroll: async (audio, secretId, secretKey, signal) => await voiceprintClient.enroll(audio, { secretId, secretKey }, signal),
   voiceprintVerify: async (audio, voiceprintId, secretId, secretKey, signal) => await voiceprintClient.verify(audio, voiceprintId, { secretId, secretKey }, signal),
   voiceprintDelete: async (voiceprintId, secretId, secretKey, signal) => await voiceprintClient.delete(voiceprintId, { secretId, secretKey }, signal),
+  composeFloor: composeFloorText,
 }
 
 const DEFAULT_INSTRUCTIONS = '请用自然、简洁、适合口语播报的中文表达，并允许用户随时打断。'
@@ -100,6 +103,9 @@ const prefsSchema = z.object({
   qwenSilenceMs: z.number().default(700),
   qwenMergeMs: z.number().default(1200),
   floorDelayMs: z.number().default(800),
+  floorComposerEnabled: z.boolean().default(true),
+  qwenFloorModel: z.string().default('qwen3.5-flash'),
+  openaiFloorModel: z.string().default('gpt-5-mini'),
   voiceprintEnabled: z.boolean().default(false),
   voiceprintThreshold: z.number().default(75),
   voiceprintId: z.string().default(''),
@@ -179,6 +185,11 @@ export function apply(ctx: HostContext, dependencies: HostDependencies = product
     path: '/dsh-realtime-voice/voiceprint',
     handler: (req, res) => handleVoiceprint(ctx, deps, () => prefsScope, req, res),
   }), 'dsh-realtime-voice: optional voiceprint gate')
+  ctx.effect(() => ctx.webServer.register({
+    kind: 'exact',
+    path: '/dsh-realtime-voice/floor-compose',
+    handler: (req, res) => handleFloorCompose(ctx, deps, () => prefsScope, req, res),
+  }), 'dsh-realtime-voice: dynamic floor composer')
   for (const kind of ['asr', 'tts'] as const) {
     ctx.effect(() => ctx.webServer.registerUpgrade({
       path: `/dsh-realtime-voice/${kind}/qwen`,
@@ -219,6 +230,58 @@ export function isHostDependencies(value: unknown): value is HostDependencies {
     && typeof (value as HostDependencies).voiceprintEnroll === 'function'
     && typeof (value as HostDependencies).voiceprintVerify === 'function'
     && typeof (value as HostDependencies).voiceprintDelete === 'function'
+    && typeof (value as HostDependencies).composeFloor === 'function'
+}
+
+async function handleFloorCompose(
+  ctx: HostContext,
+  dependencies: HostDependencies,
+  getScope: () => SettingsScope<unknown> | undefined,
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<void> {
+  try {
+    if (req.method !== 'POST') throw new HttpError(405, 'method not allowed')
+    if (!isLoopbackRequest(req)) throw new HttpError(403, 'loopback same-origin request required')
+    const stored = asRecord(getScope()?.get())
+    if (stored.floorComposerEnabled === false) throw new HttpError(409, 'dynamic floor composer is disabled')
+    const body = asRecord(await readJsonBody(req, 16_000))
+    const provider: FloorProvider = body.provider === 'openai' ? 'openai' : 'qwen'
+    const stage = body.stage
+    if (stage !== 'ack' && stage !== 'tool' && stage !== 'retry' && stage !== 'long-wait') throw new HttpError(400, 'invalid floor stage')
+    const topic = cleanFloorTopic(body.task)
+    if (topic === '') throw new HttpError(422, 'no safe floor topic')
+    const previousCues = Array.isArray(body.previousCues)
+      ? body.previousCues.slice(-3).map(item => validateFloorCue(item)).filter((item): item is string => item !== undefined)
+      : []
+    const ref = credentialRef(provider === 'qwen' ? 'DASHSCOPE_API_KEY' : 'OPENAI_API_KEY')
+    const credential = await ctx.credentials.resolve(ref)
+    if (credential === undefined || credential.value.trim() === '') throw new HttpError(502, `${ref} is not configured`)
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(new Error('floor composer timeout')), 1_500)
+    req.once('aborted', () => controller.abort(new Error('floor composer client disconnected')))
+    try {
+      const cue = await dependencies.composeFloor({
+        provider,
+        workspaceId: typeof stored.qwenWorkspaceId === 'string' ? stored.qwenWorkspaceId : '',
+        region: stored.qwenRegion === 'ap-southeast-1' ? 'ap-southeast-1' : 'cn-beijing',
+        model: provider === 'qwen'
+          ? (typeof stored.qwenFloorModel === 'string' ? stored.qwenFloorModel : 'qwen3.5-flash')
+          : (typeof stored.openaiFloorModel === 'string' ? stored.openaiFloorModel : 'gpt-5-mini'),
+        topic,
+        stage: stage as FloorStage,
+        previousCues,
+      }, credential.value, controller.signal)
+      const safe = validateFloorCue(cue)
+      if (safe === undefined) throw new Error('floor provider returned unsafe text')
+      sendJson(res, 200, { cue: safe })
+    } finally {
+      clearTimeout(timer)
+    }
+  } catch (error) {
+    const status = error instanceof HttpError ? error.status : 502
+    sendJson(res, status, { error: status === 502 ? 'floor composer unavailable' : error instanceof Error ? error.message : 'floor composer failed' })
+  }
 }
 
 async function handleSignal(
@@ -390,6 +453,9 @@ function sanitizePrefs(value: unknown): Record<string, unknown> {
     qwenSilenceMs: numberInRange(source.qwenSilenceMs, 200, 6000, 700),
     qwenMergeMs: numberInRange(source.qwenMergeMs, 100, 5000, 1200),
     floorDelayMs: numberInRange(source.floorDelayMs, 400, 3000, 800),
+    floorComposerEnabled: source.floorComposerEnabled !== false,
+    qwenFloorModel: text(source.qwenFloorModel, 128) || 'qwen3.5-flash',
+    openaiFloorModel: text(source.openaiFloorModel, 128) || 'gpt-5-mini',
     voiceprintEnabled: source.voiceprintEnabled === true,
     voiceprintThreshold: numberInRange(source.voiceprintThreshold, 0, 100, 75),
     openaiModel: text(source.openaiModel, 128) || 'gpt-realtime-2.1',

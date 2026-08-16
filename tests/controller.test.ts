@@ -168,7 +168,7 @@ test('Qwen composer mode auto-submits an idle utterance, stages busy speech, and
 
 test('native slow turn speaks one floor cue then the first answer paragraph', async () => {
   installBrowserStubs()
-  updatePrefs({ provider: 'qwen', qwenMergeMs: 100, floorDelayMs: 400 })
+  updatePrefs({ provider: 'qwen', qwenMergeMs: 100, floorDelayMs: 400, floorComposerEnabled: false })
   let callbacks!: RealtimeCallbacks
   let observer!: {
     onTurnStart(turn: string): void

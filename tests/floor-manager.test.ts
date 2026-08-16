@@ -98,3 +98,88 @@ test('retry wording is truthful, contextual and distinct from the first cue', as
   assert.match(spoken[1] ?? '', /重试|重新/)
   assert.doesNotMatch(spoken[1] ?? '', /已经完成|结果是/)
 })
+
+test('dynamic resolver starts immediately and its free-form cue owns the healthy path', async () => {
+  const spoken: string[] = []
+  let startedAt = 0
+  const before = Date.now()
+  const floor = new FloorManager(20, text => spoken.push(text), {
+    resolveCue: async () => { startedAt = Date.now(); await delay(5); return '我顺着你的思路捋一捋，马上接上。' },
+  })
+  floor.start('分析训练计划')
+  assert.ok(startedAt - before < 10)
+  await delay(28)
+  assert.deepEqual(spoken, ['我顺着你的思路捋一捋，马上接上。'])
+  floor.dispose()
+})
+
+test('visible result aborts and discards a stale dynamic cue', async () => {
+  const spoken: string[] = []
+  let aborted = false
+  const floor = new FloorManager(10, text => spoken.push(text), {
+    resolveCue: async (_request, signal) => await new Promise(resolve => {
+      signal.addEventListener('abort', () => { aborted = true; resolve('这句已经过期。') }, { once: true })
+    }),
+  })
+  floor.start('查天气')
+  floor.resultAvailable()
+  await delay(20)
+  assert.equal(aborted, true)
+  assert.deepEqual(spoken, [])
+})
+
+test('dynamic tool reset aborts the old cue and composes from the new stage', async () => {
+  const spoken: string[] = []
+  const stages: string[] = []
+  let oldAborted = false
+  const floor = new FloorManager(50, text => spoken.push(text), {
+    progressDelayMs: 5,
+    longWaitMs: 100,
+    resolveCue: async (request, signal) => {
+      stages.push(request.stage)
+      if (request.stage === 'ack') return await new Promise(resolve => {
+        signal.addEventListener('abort', () => { oldAborted = true; resolve('这句旧接场不能播。') }, { once: true })
+      })
+      return '外部步骤还在返回，我换个自然方式陪你等。'
+    },
+  })
+  floor.start('查深圳天气')
+  floor.reset('tool')
+  await delay(15)
+  assert.equal(oldAborted, true)
+  assert.deepEqual(stages.slice(0, 2), ['ack', 'tool'])
+  assert.deepEqual(spoken, ['外部步骤还在返回，我换个自然方式陪你等。'])
+  floor.dispose()
+})
+
+test('composer grace timeout speaks only neutral fallback then allows a fresh long-wait cue', async () => {
+  const spoken: string[] = []
+  const floor = new FloorManager(1, text => spoken.push(text), {
+    longWaitMs: 5,
+    maxCues: 2,
+    resolveCue: async request => {
+      if (request.stage === 'ack') {
+        await delay(520)
+        return '这句模型结果已经迟到了。'
+      }
+      assert.deepEqual(request.previousCues, ['嗯，我先看一下。'])
+      return '这一步还需要一点时间，我自然地陪你接着等。'
+    },
+  })
+  floor.start('分析训练计划')
+  await delay(535)
+  assert.deepEqual(spoken, ['嗯，我先看一下。', '这一步还需要一点时间，我自然地陪你接着等。'])
+  assert.equal(spoken.includes('这句模型结果已经迟到了。'), false)
+  floor.dispose()
+})
+
+test('a synchronously throwing resolver degrades to the neutral cue', async () => {
+  const spoken: string[] = []
+  const floor = new FloorManager(2, text => spoken.push(text), {
+    resolveCue: (() => { throw new Error('sync failure') }) as never,
+  })
+  assert.doesNotThrow(() => floor.start('分析问题'))
+  await delay(8)
+  assert.deepEqual(spoken, ['嗯，我先看一下。'])
+  floor.dispose()
+})

@@ -1,5 +1,6 @@
 import { HarnessBridge, type DelegateResult, type TextResetReason } from './harness-delegate.ts'
 import { FloorManager } from './floor-manager.ts'
+import { resolveDynamicFloorCue } from './floor-composer.ts'
 import { loadPrefs, type VoicePrefs } from './prefs.ts'
 import { RealtimeConnection, type RealtimeCallbacks } from './realtime.ts'
 import type { ToolCall } from './protocol.ts'
@@ -345,7 +346,10 @@ export class VoiceController {
         observed.speechCancelled = true
       })
     }
-    observed.floor = new FloorManager(loadPrefs().floorDelayMs, enqueueSpeech)
+    const floorPrefs = loadPrefs()
+    observed.floor = new FloorManager(floorPrefs.floorDelayMs, enqueueSpeech, {
+      resolveCue: floorPrefs.floorComposerEnabled ? resolveDynamicFloorCue : undefined,
+    })
     observed.floor.start(submittedTask)
     observed.summary = new VoiceSummaryStream(sentence => {
       enqueueSpeech(sentence)
@@ -458,7 +462,10 @@ export class VoiceController {
       })
     }
     let summary = new VoiceSummaryStream(enqueueSpeech)
-    const floor = new FloorManager(loadPrefs().floorDelayMs, enqueueSpeech)
+    const floorPrefs = loadPrefs()
+    const floor = new FloorManager(floorPrefs.floorDelayMs, enqueueSpeech, {
+      resolveCue: floorPrefs.floorComposerEnabled ? resolveDynamicFloorCue : undefined,
+    })
     floor.start(task)
     const result = await this.bridge.delegate(
       this.sessionId,

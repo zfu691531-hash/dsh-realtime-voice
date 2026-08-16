@@ -3,6 +3,7 @@ import type { Duplex } from 'node:stream';
 import { credentialRef } from '@deepseek-ai/dsh-credentials';
 import z from '@deepseek-ai/schemastery';
 import { type SignalRequest } from './host/signaling.ts';
+import { composeFloorText } from './host/floor-composer.ts';
 export declare const name = "dsh-realtime-voice";
 export declare const inject: string[];
 interface CredentialService {
@@ -73,6 +74,7 @@ export interface HostDependencies {
         score: number;
     }>;
     voiceprintDelete(voiceprintId: string, secretId: string, secretKey: string, signal: AbortSignal): Promise<void>;
+    composeFloor(input: Parameters<typeof composeFloorText>[0], key: string, signal: AbortSignal): Promise<string>;
 }
 export declare function apply(ctx: HostContext, dependencies?: HostDependencies): void;
 export declare function isHostDependencies(value: unknown): value is HostDependencies;

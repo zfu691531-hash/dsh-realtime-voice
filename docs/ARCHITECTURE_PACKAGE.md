@@ -6,9 +6,9 @@ This document is the handoff contract for the wider DSH plugin composition.
 
 - Repository: <https://github.com/zfu691531-hash/dsh-realtime-voice>
 - Default branch: `main`
-- Release line: `0.10.x`
-- Current release candidate: `v0.10.0`
-- Released commit: recorded by the immutable `v0.10.0` tag after release publication
+- Release line: `0.11.x`
+- Current release candidate: `v0.11.0`
+- Released commit: recorded by the immutable `v0.11.0` tag after release publication
 
 The exact released commit is recorded by the immutable Git tag and GitHub Release. Do not duplicate this repository or rewrite its history.
 

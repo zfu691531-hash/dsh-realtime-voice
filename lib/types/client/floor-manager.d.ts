@@ -4,7 +4,15 @@ export interface FloorTimings {
     progressDelayMs?: number;
     longWaitMs?: number;
     maxCues?: number;
+    resolveCue?: FloorCueResolver;
 }
+export interface FloorCueRequest {
+    task: string;
+    stage: FloorStage;
+    ordinal: number;
+    previousCues: string[];
+}
+export type FloorCueResolver = (request: FloorCueRequest, signal: AbortSignal) => Promise<string | undefined>;
 /**
  * A latency race, not a second answering agent. Harness remains the only
  * reasoning writer. The manager gets lifecycle signals from the Harness turn
@@ -22,6 +30,9 @@ export declare class FloorManager {
     private readonly progressDelayMs;
     private readonly longWaitMs;
     private readonly maxCues;
+    private readonly resolveCue?;
+    private generation;
+    private requestAbort?;
     constructor(delayMs: number, emit: (text: string) => void, timings?: FloorTimings);
     start(task?: string): void;
     /** A visible final-answer delta owns the floor immediately. */

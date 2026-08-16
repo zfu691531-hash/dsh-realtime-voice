@@ -35,6 +35,8 @@ function fixture(configured: boolean, initialPrefs: Record<string, unknown> = {}
   let voiceprintEnrolls = 0
   let voiceprintVerifies = 0
   let voiceprintDeletes = 0
+  let floorComposes = 0
+  let lastFloorInput: unknown
   let storedPrefs: Record<string, unknown> = { voiceprintThreshold: 75, ...initialPrefs }
   let voiceContextProvider: ((context: { agent?: { id: string } }) => string) | undefined
   const dependencies: HostDependencies = {
@@ -43,6 +45,7 @@ function fixture(configured: boolean, initialPrefs: Record<string, unknown> = {}
     voiceprintEnroll: async () => { voiceprintEnrolls++; return 'voiceprint-test-id' },
     voiceprintVerify: async () => { voiceprintVerifies++; return { decision: true, score: 88 } },
     voiceprintDelete: async () => { voiceprintDeletes++ },
+    composeFloor: async input => { floorComposes++; lastFloorInput = input; return '我换个自然的说法，马上接着聊。' },
   }
   const ctx = {
     credentials: {
@@ -87,6 +90,7 @@ function fixture(configured: boolean, initialPrefs: Record<string, unknown> = {}
     disposers,
     exchanged: () => exchanged,
     voiceprintCalls: () => ({ enrolls: voiceprintEnrolls, verifies: voiceprintVerifies, deletes: voiceprintDeletes }),
+    floorCalls: () => ({ count: floorComposes, input: lastFloorInput }),
     storedPrefs: () => storedPrefs,
     voiceContext: (sessionId: string) => voiceContextProvider?.({ agent: { id: sessionId } }) ?? '',
   }
@@ -96,6 +100,7 @@ test('host routes dispose cleanly and can be mounted again', () => {
   const one = fixture(false)
   assert.deepEqual([...one.routes.keys()].sort(), [
     '/dsh-realtime-voice/context',
+    '/dsh-realtime-voice/floor-compose',
     '/dsh-realtime-voice/prefs',
     '/dsh-realtime-voice/signaling/openai',
     '/dsh-realtime-voice/signaling/qwen',
@@ -110,8 +115,39 @@ test('host routes dispose cleanly and can be mounted again', () => {
   assert.equal(one.routes.size, 0)
   assert.equal(one.upgrades.size, 0)
   const two = fixture(false)
-  assert.equal(two.routes.size, 6)
+  assert.equal(two.routes.size, 7)
   assert.equal(two.upgrades.size, 2)
+})
+
+test('dynamic floor route cleans input and returns only validated model speech', async () => {
+  const fx = fixture(true, { floorComposerEnabled: true, qwenWorkspaceId: 'workspace-test', qwenFloorModel: 'qwen3.5-flash' })
+  const res = response()
+  await fx.routes.get('/dsh-realtime-voice/floor-compose')?.(
+    request({ provider: 'qwen', task: '查天气 https://example.com sk-abcdefghijklmnopqrstuvwxyz 深圳明天', stage: 'ack', previousCues: [] }) as never,
+    res.value as never,
+  )
+  assert.equal(res.result.status, 200)
+  assert.match(res.result.body, /自然的说法/)
+  assert.equal(fx.floorCalls().count, 1)
+  const serialized = JSON.stringify(fx.floorCalls().input)
+  assert.doesNotMatch(serialized, /example\.com|sk-abcdefghijklmnopqrstuvwxyz/)
+})
+
+test('dynamic floor route rejects bad stages and missing credentials before provider use', async () => {
+  const fx = fixture(false, { floorComposerEnabled: true, qwenWorkspaceId: 'workspace-test' })
+  const bad = response()
+  await fx.routes.get('/dsh-realtime-voice/floor-compose')?.(
+    request({ provider: 'qwen', task: '深圳天气', stage: 'answer', previousCues: [] }) as never,
+    bad.value as never,
+  )
+  assert.equal(bad.result.status, 400)
+  const missing = response()
+  await fx.routes.get('/dsh-realtime-voice/floor-compose')?.(
+    request({ provider: 'qwen', task: '深圳天气', stage: 'ack', previousCues: [] }) as never,
+    missing.value as never,
+  )
+  assert.equal(missing.result.status, 502)
+  assert.equal(fx.floorCalls().count, 0)
 })
 
 test('voice output contract is session-scoped runtime context, not route-visible prompt text', async () => {
@@ -300,5 +336,6 @@ test('cordis install shape: config objects do not masquerade as host dependencie
     voiceprintEnroll: async () => '',
     voiceprintVerify: async () => ({ decision: false, score: 0 }),
     voiceprintDelete: async () => {},
+    composeFloor: async () => '我先看看。',
   } satisfies HostDependencies), true)
 })
