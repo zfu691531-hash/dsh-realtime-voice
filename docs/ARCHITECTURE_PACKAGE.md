@@ -6,9 +6,9 @@ This document is the handoff contract for the wider DSH plugin composition.
 
 - Repository: <https://github.com/zfu691531-hash/dsh-realtime-voice>
 - Default branch: `main`
-- Development branch: `agent/natural-floor-manager`
 - Release line: `0.9.x`
-- Baseline commit before 0.9: `6213fcde3d946ecdc380376d3e42f909815f81ed`
+- Current release: `v0.9.0`
+- Released commit: `e058116fde9610ffee33fa435afc9f60c5644cd2`
 
 The exact released commit is recorded by the immutable Git tag and GitHub Release. Do not duplicate this repository or rewrite its history.
 
@@ -53,9 +53,23 @@ The optional OpenAI route uses the provider Realtime transport, but its mandator
 |---|---:|---|
 | General communication/app control | No | Installed Harness tools receive the native user turn; voice never calls them directly. |
 | Memory | No | Memory plugins read/write through the same Harness turn and history. Voice stores no independent long-term memory. |
-| Gesture control | No | A gesture plugin may trigger native UI actions or voice start/stop, but must not write this plugin's private state. |
+| Gesture control | No | Gesture and voice are peer local-I/O plugins. Neither may call the other's private runtime; multimodal orchestration belongs to a versioned public DSH capability/event layer. |
 | Collaboration Skill/DSH agents | No | Collaboration remains a Harness/Codex workflow; voice observes the resulting session trace only. |
 | MCP | No | This is a native DSH Host+Client bundle, not an MCP server. MCP tools remain independently installable. |
+
+## Peer I/O baseline: dsh-gesture-mouse v0.1.0
+
+The accepted gesture peer baseline is [dsh-gesture-mouse](https://github.com/zfu691531-hash/dsh-gesture-mouse) at commit `47cc7985b25d340740af9887259c32f4fc6b9b16`, tag `v0.1.0`.
+
+- Its public DSH tools are `gesture_status`, `gesture_start`, `gesture_stop`, and `gesture_test_trigger`.
+- Its Swift Helper reports only `hello`, `state`, `stats`, `error`, and `trigger`; a `trigger` contains only `gestureId`, `confidence`, and `timestamp`.
+- Images and landmarks do not leave the Swift Helper. `autoStart` defaults to `false`; Camera and Accessibility are its minimum permissions.
+- In v0.1.0, external actions are reported only as `planned`, `accepted`, or `ignored`; the gesture plugin does not execute them.
+- Voice must not depend on the gesture plugin's IPC, PID, socket/token, Swift state machine, or internal file layout. Gesture must likewise not depend on voice internals.
+- Any future integration must use a versioned public DSH capability/event adapter owned by the Host or public capability layer. Multimodal orchestration must not be implemented inside either I/O plugin.
+- Gesture confidence is only a sensor signal. It is not identity, authorization, or permission to execute an action.
+
+Real-device Camera/TCC behavior, false-trigger rate, latency, dark/occluded conditions, and formal signing are not yet accepted for the gesture peer. Neither this architecture package nor the voice plugin claims that gesture v0.1.0 is production-ready.
 
 ## Verified commands
 
